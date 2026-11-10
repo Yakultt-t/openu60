@@ -88,6 +88,14 @@ pub fn route(method: &Method, path: &str, state: &AppState, body: &[u8]) -> Opti
                 Err(e) => (400, json!({"ok": false, "error": e})),
             }
         }
+        (&Method::Post, "/probe") => {
+            let v = match parsed() {
+                Ok(v) => v,
+                Err(r) => return Some(r),
+            };
+            let r = svc.probe(v["relay"].as_str().unwrap_or(""));
+            (200, json!({"ok": true, "data": r}))
+        }
         _ => (404, json!({"ok": false, "error": "not found"})),
     })
 }

@@ -12,6 +12,7 @@ pub mod logger;
 pub mod mdns;
 pub mod mux;
 pub mod phone;
+pub mod probe;
 pub mod proto;
 pub mod relay;
 pub mod tls;

@@ -56,6 +56,9 @@ impl Default for DeviceConfig {
 /// Unpaired phones may open at most this many connections per minute (password guessing is
 /// throttled again at the bootstrap port).
 const UNPAIRED_PER_MINUTE: usize = 20;
+/// How long the router waits for a new relay to accept its registration before giving up and
+/// keeping the old one.
+const RELAY_VERIFY_SECS: u64 = 8;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Peer {
@@ -86,7 +89,7 @@ pub struct DeviceService {
     peers: Mutex<Vec<Peer>>,
     allowed: tls::AllowList,
     runtime: Runtime,
-    tasks: Mutex<Vec<JoinHandle<()>>>,
+    tasks: Mutex<HashMap<String, JoinHandle<()>>>,
     relays: Mutex<HashMap<String, Arc<Mux>>>,
     conns: Arc<Mutex<HashMap<u64, ConnInfo>>>,
     unpaired_recent: Arc<Mutex<std::collections::VecDeque<std::time::Instant>>>,
@@ -128,7 +131,7 @@ impl DeviceService {
             peers: Mutex::new(peers),
             allowed: Arc::new(RwLock::new(allowed)),
             runtime,
-            tasks: Mutex::new(Vec::new()),
+            tasks: Mutex::new(HashMap::new()),
             relays: Mutex::new(HashMap::new()),
             conns: Arc::new(Mutex::new(HashMap::new())),
             unpaired_recent: Arc::new(Mutex::new(std::collections::VecDeque::new())),
@@ -163,21 +166,43 @@ impl DeviceService {
             log::info!("relay access disabled");
             return;
         }
-        let mut tasks = self.tasks.lock().unwrap();
         for relay in cfg.relays {
-            let me = Arc::clone(self);
-            tasks.push(self.runtime.spawn(async move { me.run_relay(relay).await }));
+            self.start_relay(relay);
+        }
+    }
+
+    fn start_relay(self: &Arc<Self>, relay: String) {
+        let me = Arc::clone(self);
+        let r = relay.clone();
+        let task = self.runtime.spawn(async move { me.run_relay(r).await });
+        if let Some(old) = self.tasks.lock().unwrap().insert(relay, task) {
+            old.abort();
         }
     }
 
     fn stop_relays(&self) {
-        for t in self.tasks.lock().unwrap().drain(..) {
+        for (_, t) in self.tasks.lock().unwrap().drain() {
             t.abort();
         }
         for (_, mux) in self.relays.lock().unwrap().drain() {
             mux.close();
         }
         self.conns.lock().unwrap().clear();
+    }
+
+    /// Ends the session with one relay (and the phone connections that came through it).
+    fn stop_relay(&self, relay: &str) {
+        if let Some(t) = self.tasks.lock().unwrap().remove(relay) {
+            t.abort();
+        }
+        if let Some(mux) = self.relays.lock().unwrap().remove(relay) {
+            mux.close();
+        }
+        self.conns.lock().unwrap().retain(|_, c| c.relay != relay);
+    }
+
+    fn relay_registered(&self, relay: &str) -> bool {
+        self.relays.lock().unwrap().get(relay).map(|m| m.is_registered()).unwrap_or(false)
     }
 
     pub fn set_mdns_name(&self, name: &str) {
@@ -453,29 +478,102 @@ impl DeviceService {
         Ok(removed)
     }
 
-    /// Applies `enabled` and/or `relays` and restarts the relay sessions.
+    /// Applies `enabled` and/or `relays`.
+    ///
+    /// A new relay list is tried before it is kept: the router registers with the new relays
+    /// next to the old ones and only switches when one of them answers within
+    /// `RELAY_VERIFY_SECS` (send `"verify": false` to skip). The old sessions end a few seconds
+    /// after the reply, because the request itself may have come in through one of them.
     pub fn set_config(self: &Arc<Self>, patch: &Value) -> Result<Value, String> {
-        {
-            let mut cfg = self.config.lock().unwrap();
-            if let Some(e) = patch.get("enabled").and_then(Value::as_bool) {
-                cfg.enabled = e;
-            }
-            if let Some(list) = patch.get("relays").and_then(Value::as_array) {
-                let relays: Vec<String> = list
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
-                if relays.is_empty() {
+        let current = self.config();
+        let enabled = patch.get("enabled").and_then(Value::as_bool).unwrap_or(current.enabled);
+        let relays = match patch.get("relays").and_then(Value::as_array) {
+            Some(list) => {
+                let mut out: Vec<String> = Vec::new();
+                for v in list {
+                    let raw = v.as_str().unwrap_or("").trim();
+                    if raw.is_empty() {
+                        continue;
+                    }
+                    let r = crate::probe::normalize_relay(raw).ok_or_else(|| format!("not a relay address: {raw}"))?;
+                    if !out.contains(&r) {
+                        out.push(r);
+                    }
+                }
+                if out.is_empty() {
                     return Err("at least one relay is required".into());
                 }
-                cfg.relays = relays;
+                out
             }
+            None => current.relays.clone(),
+        };
+        let verify = patch.get("verify").and_then(Value::as_bool).unwrap_or(true);
+        let changed = relays != current.relays;
+
+        if enabled && current.enabled && changed {
+            let running: Vec<String> = self.tasks.lock().unwrap().keys().cloned().collect();
+            let added: Vec<String> = relays.iter().filter(|r| !running.contains(r)).cloned().collect();
+            for r in &added {
+                self.start_relay(r.clone());
+            }
+            if verify {
+                let deadline = std::time::Instant::now() + Duration::from_secs(RELAY_VERIFY_SECS);
+                while !relays.iter().any(|r| self.relay_registered(r)) {
+                    if std::time::Instant::now() >= deadline {
+                        for r in &added {
+                            self.stop_relay(r);
+                        }
+                        return Err(format!(
+                            "the router could not register with {} within {RELAY_VERIFY_SECS} s; kept {}",
+                            relays.join(", "),
+                            if current.relays.is_empty() { "no relay".to_string() } else { current.relays.join(", ") }
+                        ));
+                    }
+                    std::thread::sleep(Duration::from_millis(250));
+                }
+            }
+            {
+                let mut cfg = self.config.lock().unwrap();
+                cfg.relays = relays.clone();
+            }
+            self.persist()?;
+            let removed: Vec<String> = running.into_iter().filter(|r| !relays.contains(r)).collect();
+            if !removed.is_empty() {
+                let me = Arc::clone(self);
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_secs(3));
+                    for r in removed {
+                        log::info!("relay {r} removed");
+                        me.stop_relay(&r);
+                    }
+                });
+            }
+            log::info!("relays now {}", relays.join(", "));
+            return Ok(self.status_after_change());
+        }
+
+        {
+            let mut cfg = self.config.lock().unwrap();
+            cfg.enabled = enabled;
+            cfg.relays = relays;
         }
         self.persist()?;
-        self.start_relays();
-        Ok(self.info())
+        if enabled != current.enabled || changed {
+            self.start_relays();
+        }
+        Ok(self.status_after_change())
+    }
+
+    /// Checks from the router whether a relay answers (nothing is changed).
+    pub fn probe(&self, relay: &str) -> crate::probe::ProbeResult {
+        self.runtime.block_on(crate::probe::probe_relay(relay, Duration::from_secs(4)))
+    }
+
+    fn status_after_change(&self) -> Value {
+        let mut v = self.info();
+        let registered: Vec<String> = self.config().relays.into_iter().filter(|r| self.relay_registered(r)).collect();
+        v["registered"] = json!(registered);
+        v
     }
 }
 
