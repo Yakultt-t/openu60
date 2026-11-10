@@ -13,9 +13,14 @@
 IFACE=wlan4
 # The phy index is not stable across reboots (phy0 after a clean boot, phy1 after a driver
 # reload), so resolve it from the running AP interface or sysfs each time.
-PHY=$(iw dev wlan2 info 2>/dev/null | sed -n 's/.*wiphy \([0-9]*\).*/phy\1/p' | head -1)
-[ -n "$PHY" ] || PHY=$(ls /sys/class/ieee80211/ 2>/dev/null | head -1)
-[ -n "$PHY" ] || PHY=phy0
+# Re-resolved every time it is needed (resolve_phy): a firmware Wi-Fi reload renumbers it.
+resolve_phy() {
+    PHY=$(iw dev wlan2 info 2>/dev/null | sed -n 's/.*wiphy \([0-9]*\).*/phy\1/p' | head -1)
+    [ -n "$PHY" ] || PHY=$(iw dev wlan0 info 2>/dev/null | sed -n 's/.*wiphy \([0-9]*\).*/phy\1/p' | head -1)
+    [ -n "$PHY" ] || PHY=$(ls /sys/class/ieee80211/ 2>/dev/null | head -1)
+    [ -n "$PHY" ] || PHY=phy0
+}
+resolve_phy
 SCAN_IFACES="wlan2 wlan0"
 CONF=/tmp/wpa_uplink.conf
 CTRL=/var/run/wpa_uplink
@@ -39,6 +44,7 @@ kill_matching() {
 json_escape() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
 
 ensure_iface() {
+    resolve_phy
     if ! iw dev "$IFACE" info >/dev/null 2>&1; then
         iw phy "$PHY" interface add "$IFACE" type managed 2>>"$LOG" || {
             log "cannot add $IFACE on $PHY (phys: $(ls /sys/class/ieee80211/ 2>/dev/null | tr '\n' ' '))"
@@ -72,7 +78,15 @@ scan_iface() {
 
 do_scan() {
     # Scan from the AP vifs (allowed while serving clients) so no station vif is needed yet.
-    for i in $SCAN_IFACES; do scan_iface "$i"; done | awk '
+    # In client mode both hotspot vifs can be down; the station vif can scan then.
+    ifs=""
+    for i in $SCAN_IFACES; do
+        ip link show "$i" 2>/dev/null | grep -q "state UP\|,UP" && ifs="$ifs $i"
+    done
+    if [ -z "$ifs" ]; then
+        ensure_iface >/dev/null 2>&1 && ifs="$IFACE"
+    fi
+    for i in $ifs; do scan_iface "$i"; done | awk '
     function flush() {
         if (bssid != "" && ssid != "") {
             key = ssid "|" bssid
