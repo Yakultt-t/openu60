@@ -294,7 +294,7 @@ pub fn start(state: Arc<AppState>) {
     });
 }
 
-fn signed_post(
+pub(crate) fn signed_post(
     client: &reqwest::blocking::Client,
     identity: &openu60_tunnel::identity::Identity,
     url: &str,

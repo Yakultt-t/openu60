@@ -250,6 +250,18 @@ fn busy_pids(with_scans: bool) -> Vec<i32> {
 /// firmware Wi-Fi reload, finishes in under three minutes.
 const STUCK_AFTER_CHECKS: u32 = 10; // x 30 s = 5 min
 
+/// Last uplink state the guard saw: 1 up, 0 down (client/repeater mode only), -1 unknown or
+/// hotspot mode. Read by device_alerts.
+static UPLINK: std::sync::atomic::AtomicI8 = std::sync::atomic::AtomicI8::new(-1);
+
+pub fn uplink_state() -> Option<bool> {
+    match UPLINK.load(std::sync::atomic::Ordering::Relaxed) {
+        1 => Some(true),
+        0 => Some(false),
+        _ => None,
+    }
+}
+
 pub fn start_guard() {
     crate::system::spawn_named("wifi-uplink-guard", || {
         // rc.local restores the uplink 45 s after boot and that takes up to a minute.
@@ -281,6 +293,7 @@ pub fn start_guard() {
             let up = v["up"].as_bool().unwrap_or(false);
             let state = v["state"].as_str().unwrap_or("");
             let lost = mode != "hotspot" && !up && matches!(state, "INTERFACE_DISABLED" | "DISCONNECTED" | "INACTIVE" | "");
+            UPLINK.store(if mode == "hotspot" { -1 } else if up { 1 } else { 0 }, std::sync::atomic::Ordering::Relaxed);
             misses = if lost { misses + 1 } else { 0 };
             // Two checks in a row (about a minute): a reload in progress gets time to finish.
             if misses >= 2 {

@@ -44,6 +44,7 @@ mod usb;
 mod voice_bridge;
 mod wifi;
 mod watch_link;
+mod device_alerts;
 mod wifi_wan;
 
 use std::sync::Arc;
@@ -129,6 +130,7 @@ fn main() {
         tunnel::start(t);
     }
     watch_link::start(Arc::clone(&state));
+    device_alerts::start(Arc::clone(&state));
     state.tailscale.auto_start();
     state.tailscale.start_wan_watch(ts_wan_rx);
     state.mihomo.auto_start();

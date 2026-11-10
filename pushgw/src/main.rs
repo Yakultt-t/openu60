@@ -72,6 +72,33 @@ struct Gateway {
     limits: Mutex<HashMap<[u8; 32], Limits>>,
     links: Mutex<HashMap<String, Arc<Mailbox>>>,
     watch_limits: Mutex<HashMap<std::net::IpAddr, (f64, Instant)>>,
+    heartbeats: Mutex<HashMap<String, Heartbeat>>,
+}
+
+/// Offline alerts: a router posts `/v1/heartbeat` (signed, "openu60-link") once a minute with
+/// the devices that want to know when it goes quiet. After `OFFLINE_AFTER` without one the
+/// gateway tells them; when heartbeats resume it says the router is back.
+const OFFLINE_AFTER: Duration = Duration::from_secs(5 * 60);
+const MAX_WATCHERS: usize = 10;
+
+/// `PUSHGW_OFFLINE_SECS` shortens the wait for testing.
+fn offline_after() -> Duration {
+    std::env::var("PUSHGW_OFFLINE_SECS").ok().and_then(|v| v.parse().ok()).map(Duration::from_secs).unwrap_or(OFFLINE_AFTER)
+}
+
+#[derive(Clone, Deserialize)]
+struct Watcher {
+    token: String,
+    #[serde(default)]
+    env: String,
+    #[serde(default)]
+    lang: String,
+}
+
+struct Heartbeat {
+    last: Instant,
+    watchers: Vec<Watcher>,
+    alerted: bool,
 }
 
 /// Watch link limits.
@@ -305,6 +332,30 @@ impl Gateway {
         let device = hex::encode(&ring::digest::digest(&ring::digest::SHA256, &key).as_ref()[..8]);
         let mailbox = self.mailbox(&device);
 
+        if path == "/v1/heartbeat" {
+            let v: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+            let watchers: Vec<Watcher> = serde_json::from_value::<Vec<Watcher>>(v["watchers"].clone())
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|w| (32..=512).contains(&w.token.len()) && w.token.bytes().all(|b| b.is_ascii_hexdigit()))
+                .take(MAX_WATCHERS)
+                .collect();
+            let back = {
+                let mut all = self.heartbeats.lock().unwrap();
+                let entry = all.entry(device.clone()).or_insert(Heartbeat { last: Instant::now(), watchers: Vec::new(), alerted: false });
+                entry.last = Instant::now();
+                entry.watchers = watchers;
+                let was = entry.alerted;
+                entry.alerted = false;
+                if was { entry.watchers.clone() } else { Vec::new() }
+            };
+            if !back.is_empty() {
+                log(format!("router {device} is back online"));
+                self.notify_watchers(&back, ("U60 已恢复在线", "路由器重新连上网络了。"), ("U60 is back online", "The router is reachable again.")).await;
+            }
+            return reply(StatusCode::OK, json!({"ok": true}));
+        }
+
         if path == "/v1/link/reply" {
             let v: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
             let (Some(id), Some(blob)) = (v["id"].as_str(), v["blob"].as_str()) else {
@@ -344,6 +395,49 @@ impl Gateway {
         }
     }
 
+    async fn notify_watchers(&self, watchers: &[Watcher], zh: (&str, &str), en: (&str, &str)) {
+        let Some(apns) = self.apns.as_ref() else { return };
+        for w in watchers {
+            let (title, body) = if w.lang == "en" { en } else { zh };
+            let push = PushRequest {
+                env: if w.env == "sandbox" { "sandbox".into() } else { "production".into() },
+                token: w.token.clone(),
+                push_type: "alert".into(),
+                priority: Some(10),
+                expiration: Some(now() + 3600),
+                collapse_id: Some("openu60-offline".into()),
+                payload: json!({"aps": {"alert": {"title": title, "body": body}, "sound": "default", "thread-id": "openu60-device"}, "kind": "device"}),
+            };
+            let (status, reason) = apns.send(&push).await;
+            if status != 200 {
+                log(format!("offline alert: APNs {status} {}", reason.unwrap_or_default()));
+            }
+        }
+    }
+
+    /// Runs forever: tells watchers about routers whose heartbeats stopped.
+    async fn watch_heartbeats(self: Arc<Self>) {
+        loop {
+            tokio::time::sleep(Duration::from_secs(if offline_after() < Duration::from_secs(60) { 2 } else { 30 })).await;
+            let due: Vec<(String, Vec<Watcher>)> = {
+                let mut all = self.heartbeats.lock().unwrap();
+                all.retain(|_, h| h.last.elapsed() < Duration::from_secs(7 * 86_400));
+                all.iter_mut()
+                    .filter(|(_, h)| !h.alerted && h.last.elapsed() >= offline_after() && !h.watchers.is_empty())
+                    .map(|(id, h)| {
+                        h.alerted = true;
+                        (id.clone(), h.watchers.clone())
+                    })
+                    .collect()
+            };
+            for (id, watchers) in due {
+                log(format!("router {id} offline; telling {} device(s)", watchers.len()));
+                self.notify_watchers(&watchers, ("U60 已离线", "5 分钟没有收到路由器的消息，可能没电、关机或断网了，这段时间收不到短信和电话。"),
+                    ("U60 is offline", "No word from the router for 5 minutes: it may be out of battery, off or without internet. SMS and calls cannot reach you.")).await;
+            }
+        }
+    }
+
     async fn handle(&self, req: Request<Incoming>, peer: SocketAddr) -> Response<Full<Bytes>> {
         if req.method() == Method::GET && req.uri().path() == "/healthz" {
             return reply(StatusCode::OK, json!({"ok": true, "push": self.apns.is_some(), "link": true}));
@@ -354,7 +448,7 @@ impl Gateway {
                 let device = device.to_string();
                 return self.link_send(req, peer, &device).await;
             }
-            if path == "/v1/link/poll" || path == "/v1/link/reply" {
+            if path == "/v1/link/poll" || path == "/v1/link/reply" || path == "/v1/heartbeat" {
                 return self.link_router(req, peer, &path).await;
             }
         }
@@ -473,7 +567,9 @@ async fn main() {
         limits: Mutex::new(HashMap::new()),
         links: Mutex::new(HashMap::new()),
         watch_limits: Mutex::new(HashMap::new()),
+        heartbeats: Mutex::new(HashMap::new()),
     });
+    tokio::spawn(Arc::clone(&gw).watch_heartbeats());
     // Local testing only: plain HTTP when explicitly asked and no certificate is given.
     let insecure = std::env::var("PUSHGW_CERT").is_err() && std::env::var("PUSHGW_INSECURE_HTTP").as_deref() == Ok("1");
     let acceptor = if insecure { None } else { Some(tls_acceptor()) };

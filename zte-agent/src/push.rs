@@ -126,23 +126,103 @@ fn load_provider() -> Result<Option<Provider>, &'static str> {
 
 /// Push tokens of one phone/tablet. Every bound device keeps its own, so an incoming call rings
 /// all of them (whichever answers carries the audio).
-/// What a device wants to be told about. Everything is on until the app says otherwise.
-#[derive(Clone, Copy, PartialEq, serde::Serialize, Deserialize)]
+/// What a device wants to be told about. Everything is on until the app says otherwise
+/// (except "charged", which most people do not want).
+#[derive(Clone, PartialEq, serde::Serialize, Deserialize)]
 pub struct NotifyPrefs {
     #[serde(default = "default_true")]
     pub sms: bool,
     #[serde(default = "default_true")]
     pub mms: bool,
+    /// Incoming calls through VoIP push / CallKit.
     #[serde(default = "default_true")]
     pub calls: bool,
     #[serde(default = "default_true")]
     pub data: bool,
+    /// Only messages from numbers in the phone's contacts (`known`).
+    #[serde(default)]
+    pub sms_known_only: bool,
+    /// ...but verification codes always get through.
+    #[serde(default = "default_true")]
+    pub codes_always: bool,
+    /// Hashed contact numbers (see `number_hash`), sent by the app when `sms_known_only` is on.
+    #[serde(default)]
+    pub known: Vec<String>,
+    /// A plain notification for missed calls (useful with `calls` off).
+    #[serde(default = "default_true")]
+    pub missed: bool,
+    #[serde(default = "default_true")]
+    pub offline: bool,
+    #[serde(default = "default_true")]
+    pub battery: bool,
+    #[serde(default = "default_true")]
+    pub service: bool,
+    #[serde(default = "default_true")]
+    pub volte: bool,
+    #[serde(default = "default_true")]
+    pub uplink: bool,
+    #[serde(default = "default_true")]
+    pub temperature: bool,
+    #[serde(default)]
+    pub charged: bool,
+    /// UI language of the device ("zh" or "en") for router-written alerts.
+    #[serde(default)]
+    pub lang: String,
 }
 
 impl Default for NotifyPrefs {
     fn default() -> Self {
-        Self { sms: true, mms: true, calls: true, data: true }
+        Self {
+            sms: true, mms: true, calls: true, data: true, sms_known_only: false, codes_always: true,
+            known: Vec::new(), missed: true, offline: true, battery: true, service: true, volte: true,
+            uplink: true, temperature: true, charged: false, lang: String::new(),
+        }
     }
+}
+
+/// Device conditions the router reports on its own (device_alerts.rs).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum DeviceAlert {
+    Battery,
+    Service,
+    Volte,
+    Uplink,
+    Temperature,
+    Charged,
+}
+
+/// The key the app hashes a contact number into (and the router a sender): digits only,
+/// the last 8 of them, so "+86 138 0013 8000" and "13800138000" match; senders with letters
+/// keep their text, upper-cased. First 16 hex chars of SHA-256.
+pub fn number_hash(number: &str) -> String {
+    let digits: String = number.chars().filter(|c| c.is_ascii_digit()).collect();
+    let key = if number.chars().any(|c| c.is_alphabetic()) {
+        number.trim().to_uppercase()
+    } else {
+        digits[digits.len().saturating_sub(8)..].to_string()
+    };
+    hex::encode(&ring::digest::digest(&ring::digest::SHA256, key.as_bytes()).as_ref()[..8])
+}
+
+/// A message that carries a one-time code ("验证码 123456", "Your code is 4821").
+pub fn looks_like_code(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    let keyword = ["验证码", "校验码", "动态码", "动态密码", "确认码", "verification", "code", "otp", "passcode", "pin"]
+        .iter()
+        .any(|k| lower.contains(k));
+    let mut run = 0;
+    let mut has_digits = false;
+    for c in text.chars() {
+        if c.is_ascii_digit() {
+            run += 1;
+        } else {
+            if (4..=8).contains(&run) {
+                has_digits = true;
+            }
+            run = 0;
+        }
+    }
+    keyword && (has_digits || (4..=8).contains(&run))
 }
 
 /// Which preference a push belongs to.
@@ -152,6 +232,8 @@ pub enum Kind {
     Mms,
     Calls,
     Data,
+    Missed,
+    Device(DeviceAlert),
     /// The test button: every device with an alert token.
     Any,
 }
@@ -163,6 +245,15 @@ impl NotifyPrefs {
             Kind::Mms => self.mms,
             Kind::Calls => self.calls,
             Kind::Data => self.data,
+            Kind::Missed => self.missed,
+            Kind::Device(a) => match a {
+                DeviceAlert::Battery => self.battery,
+                DeviceAlert::Service => self.service,
+                DeviceAlert::Volte => self.volte,
+                DeviceAlert::Uplink => self.uplink,
+                DeviceAlert::Temperature => self.temperature,
+                DeviceAlert::Charged => self.charged,
+            },
             Kind::Any => true,
         }
     }
@@ -334,6 +425,61 @@ impl PushService {
             .collect()
     }
 
+    /// Devices that want this SMS: SMS on, and (when they asked for contacts only) a known
+    /// sender or, if they allow it, a verification code.
+    fn sms_targets(&self, sender: &str, text: &str) -> Vec<(String, String)> {
+        let hash = number_hash(sender);
+        let code = looks_like_code(text);
+        let t = self.tokens.lock().unwrap();
+        t.devices
+            .iter()
+            .filter(|d| d.prefs.sms)
+            .filter(|d| !d.prefs.sms_known_only || d.prefs.known.contains(&hash) || (d.prefs.codes_always && code))
+            .filter_map(|d| d.alert_token.clone().map(|tok| (d.id.clone(), tok)))
+            .collect()
+    }
+
+    /// Language and token of every device that wants `kind`, for alerts the router writes.
+    fn alert_targets_lang(&self, kind: Kind) -> Vec<(String, String, bool)> {
+        let t = self.tokens.lock().unwrap();
+        t.devices
+            .iter()
+            .filter(|d| d.prefs.allows(kind))
+            .filter_map(|d| d.alert_token.clone().map(|tok| (d.id.clone(), tok, d.prefs.lang.starts_with("en"))))
+            .collect()
+    }
+
+    /// A router-written notification (device status, missed call), in each device's language.
+    pub fn notify_device(&self, kind: Kind, zh: (&str, &str), en: (&str, &str), collapse: &str) {
+        for (device, token, english) in self.alert_targets_lang(kind) {
+            let (title, body) = if english { en } else { zh };
+            let payload = json!({
+                "aps": {"alert": {"title": title, "body": body}, "sound": "default", "thread-id": "openu60-device"},
+                "kind": "device",
+            });
+            if let Outcome::Rejected(e) | Outcome::Retry(e) = self.deliver(&device, &token, "alert", None, 10, &payload, Some(collapse)) {
+                eprintln!("[push] {collapse} to {device}: {e}");
+            }
+        }
+    }
+
+    /// Alert tokens (with their APNs environment) of devices that want to hear when the router
+    /// goes offline: the gateway sends that one, since an offline router cannot.
+    pub fn offline_watchers(&self) -> Vec<Value> {
+        let t = self.tokens.lock().unwrap();
+        t.devices
+            .iter()
+            .filter(|d| d.prefs.offline)
+            .filter_map(|d| {
+                d.alert_token.as_ref().map(|tok| json!({
+                    "token": tok,
+                    "env": if d.sandbox == Some(true) { "sandbox" } else { "production" },
+                    "lang": if d.prefs.lang.starts_with("en") { "en" } else { "zh" },
+                }))
+            })
+            .collect()
+    }
+
     fn voip_targets(&self) -> Vec<(String, String)> {
         let t = self.tokens.lock().unwrap();
         t.devices
@@ -345,8 +491,12 @@ impl PushService {
 
     /// Sends one alert push to every device that registered an alert token and wants `kind`.
     pub fn alert_all(&self, kind: Kind, payload: &Value, collapse: Option<&str>) -> Option<String> {
+        self.alert_some(self.alert_targets(kind), payload, collapse)
+    }
+
+    fn alert_some(&self, targets: Vec<(String, String)>, payload: &Value, collapse: Option<&str>) -> Option<String> {
         let mut error = None;
-        for (device, token) in self.alert_targets(kind) {
+        for (device, token) in targets {
             match self.deliver(&device, &token, "alert", None, 10, payload, collapse) {
                 Outcome::Accepted => {}
                 Outcome::Retry(e) | Outcome::Rejected(e) => error = Some(e),
@@ -421,7 +571,9 @@ impl PushService {
         }
         let entry = tokens.devices.iter_mut().find(|d| d.id == device_id).unwrap();
         let mut changed = false;
-        if let Some(p) = prefs {
+        if let Some(mut p) = prefs {
+            p.known.truncate(5000);
+            p.known.retain(|h| h.len() == 16 && h.bytes().all(|b| b.is_ascii_hexdigit()));
             if entry.prefs != p {
                 entry.prefs = p;
                 changed = true;
@@ -562,7 +714,7 @@ impl PushService {
                     "date": m.date,
                 });
                 let collapse = format!("sms-{}", m.id);
-                match self.alert_all(Kind::Sms, &payload, Some(&collapse)) {
+                match self.alert_some(self.sms_targets(&m.sender, &m.content), &payload, Some(&collapse)) {
                     None => {
                         let mut s = self.stats.lock().unwrap();
                         s.sms_pushed += 1;
@@ -902,5 +1054,30 @@ mod tests {
         assert!(valid_token(&"ab".repeat(32)));
         assert!(!valid_token("xyz"));
         assert!(!valid_token(&"a".repeat(33)));
+    }
+}
+
+#[cfg(test)]
+mod notify_tests {
+    use super::*;
+
+    #[test]
+    fn number_hash_matches_formats() {
+        let a = number_hash("+86 138 0013 8000");
+        assert_eq!(a, number_hash("13800138000"));
+        assert_eq!(a, number_hash("0086-138-0013-8000"));
+        assert_ne!(a, number_hash("13800138001"));
+        assert_eq!(number_hash("【招商银行】"), number_hash(" 【招商银行】 "));
+        assert_eq!(a.len(), 16);
+    }
+
+    #[test]
+    fn codes_are_recognised() {
+        assert!(looks_like_code("【U60助手】验证码 482913，5 分钟内有效。"));
+        assert!(looks_like_code("Your verification code is 4821"));
+        assert!(looks_like_code("动态密码:123456"));
+        assert!(!looks_like_code("晚上一起吃饭？"));
+        assert!(!looks_like_code("验证码已发送，请注意查收"));
+        assert!(!looks_like_code("Meet at 1900 tonight"));
     }
 }

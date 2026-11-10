@@ -16,6 +16,13 @@ struct Tracker {
     loaded: bool,
 }
 
+/// Called (on its own thread) for every new missed call: device_alerts sends the notification.
+static HOOK: std::sync::OnceLock<Box<dyn Fn(&str) + Send + Sync>> = std::sync::OnceLock::new();
+
+pub fn set_hook(f: Box<dyn Fn(&str) + Send + Sync>) {
+    let _ = HOOK.set(f);
+}
+
 static TRACKER: Mutex<Tracker> = Mutex::new(Tracker { ringing: BTreeMap::new(), list: Vec::new(), loaded: false });
 
 fn now() -> u64 {
@@ -69,6 +76,11 @@ pub fn observe(calls: &[Value]) {
     for id in gone {
         if let Some((number, answered)) = t.ringing.remove(&id) {
             if !answered {
+                if let Some(hook) = HOOK.get() {
+                    let n = number.clone();
+                    let hook: &'static (dyn Fn(&str) + Send + Sync) = hook.as_ref();
+                    std::thread::spawn(move || hook(&n));
+                }
                 t.list.insert(0, (number, now()));
                 t.list.truncate(50);
                 changed = true;

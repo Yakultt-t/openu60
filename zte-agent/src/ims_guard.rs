@@ -140,7 +140,7 @@ fn check() -> Result<&'static str, String> {
 }
 
 /// True when IMS is fully registered (IMSA registration status 2).
-fn ims_registered() -> Option<bool> {
+pub fn ims_registered() -> Option<bool> {
     let (node, port) = lookup_service(IMSA_SERVICE)?;
     let mut c = Client::open(node, port)?;
     c.call(IMSA_BIND, &[(0x10, &0u32.to_le_bytes())])?;
