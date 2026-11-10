@@ -9,13 +9,19 @@
 //! Limits keep one router (or someone who generated a key) from abusing the APNs key: a
 //! bounded request rate and a bounded number of distinct device tokens per router per day.
 //!
+//! Watch link (`/v1/link/*`): a mailbox that lets an Apple Watch reach its router over
+//! cellular. The watch posts a sealed blob to `/v1/link/send/<router id>`; the router, which
+//! long-polls `/v1/link/poll` (signed like pushes, with "openu60-link" as the label), picks it
+//! up and answers through `/v1/link/reply`. Blobs are encrypted end to end between watch and
+//! router (see zte-agent/src/watch_link.rs); the gateway only sees sizes and the router id.
+//!
 //! Configuration (environment):
 //!   PUSHGW_LISTEN      address, default 0.0.0.0:443
 //!   PUSHGW_CERT/KEY    TLS certificate chain and key (PEM)
-//!   PUSHGW_APNS_KEY    Apple .p8 key file
+//!   PUSHGW_APNS_KEY    Apple .p8 key file (optional: without it only the watch link runs)
 //!   PUSHGW_KEY_ID, PUSHGW_TEAM_ID, PUSHGW_BUNDLE_ID
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -33,6 +39,7 @@ use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::net::TcpListener;
+use tokio::sync::{oneshot, Notify};
 use tokio_rustls::TlsAcceptor;
 
 const MAX_BODY: usize = 8 * 1024;
@@ -61,8 +68,36 @@ struct Limits {
 }
 
 struct Gateway {
-    apns: Apns,
+    apns: Option<Apns>,
     limits: Mutex<HashMap<[u8; 32], Limits>>,
+    links: Mutex<HashMap<String, Arc<Mailbox>>>,
+    watch_limits: Mutex<HashMap<std::net::IpAddr, (f64, Instant)>>,
+}
+
+/// Watch link limits.
+const LINK_MAX_REQUEST: usize = 16 * 1024;
+const LINK_MAX_REPLY: usize = 512 * 1024;
+const LINK_MAX_PENDING: usize = 32;
+/// How long a router poll is held open, and how long a watch waits for its answer.
+const LINK_POLL_HOLD: Duration = Duration::from_secs(25);
+const LINK_ANSWER_WAIT: Duration = Duration::from_secs(25);
+/// A router that has not polled for this long is reported offline straight away.
+const LINK_ONLINE_WINDOW: Duration = Duration::from_secs(75);
+/// Watch requests per client address: a burst of 30, refilled at two per second.
+const WATCH_BURST: f64 = 30.0;
+const WATCH_REFILL: f64 = 2.0;
+
+#[derive(Default)]
+struct MailboxState {
+    queue: VecDeque<(String, String)>,
+    waiting: HashMap<String, oneshot::Sender<String>>,
+    last_poll: Option<Instant>,
+}
+
+#[derive(Default)]
+struct Mailbox {
+    state: Mutex<MailboxState>,
+    notify: Notify,
 }
 
 #[derive(Deserialize)]
@@ -174,13 +209,161 @@ impl Gateway {
         Ok(())
     }
 
+    fn mailbox(&self, device: &str) -> Arc<Mailbox> {
+        let mut all = self.links.lock().unwrap();
+        if all.len() > 50_000 {
+            all.retain(|_, m| m.state.lock().unwrap().last_poll.map(|t| t.elapsed() < Duration::from_secs(3600)).unwrap_or(false));
+        }
+        all.entry(device.to_string()).or_default().clone()
+    }
+
+    fn admit_watch(&self, ip: std::net::IpAddr) -> bool {
+        let mut all = self.watch_limits.lock().unwrap();
+        if all.len() > 100_000 {
+            all.retain(|_, (_, t)| t.elapsed() < Duration::from_secs(600));
+        }
+        let (bucket, at) = all.entry(ip).or_insert((WATCH_BURST, Instant::now()));
+        *bucket = (*bucket + at.elapsed().as_secs_f64() * WATCH_REFILL).min(WATCH_BURST);
+        *at = Instant::now();
+        if *bucket < 1.0 {
+            return false;
+        }
+        *bucket -= 1.0;
+        true
+    }
+
+    /// Watch side: queue a sealed request for a router and wait for its sealed answer.
+    async fn link_send(&self, req: Request<Incoming>, peer: SocketAddr, device: &str) -> Response<Full<Bytes>> {
+        if device.len() != 16 || !device.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return reply(StatusCode::NOT_FOUND, json!({"error": "unknown router"}));
+        }
+        if !self.admit_watch(peer.ip()) {
+            return reply(StatusCode::TOO_MANY_REQUESTS, json!({"error": "rate limited"}));
+        }
+        let body = match Limited::new(req.into_body(), LINK_MAX_REQUEST).collect().await {
+            Ok(b) => b.to_bytes(),
+            Err(_) => return reply(StatusCode::PAYLOAD_TOO_LARGE, json!({"error": "body too large"})),
+        };
+        let blob = match serde_json::from_slice::<Value>(&body).ok().and_then(|v| v["blob"].as_str().map(str::to_string)) {
+            Some(b) if !b.is_empty() => b,
+            _ => return reply(StatusCode::BAD_REQUEST, json!({"error": "bad request"})),
+        };
+        let device = device.to_ascii_lowercase();
+        let mailbox = self.mailbox(&device);
+        let id = hex::encode(rand_bytes::<12>());
+        let (tx, rx) = oneshot::channel();
+        {
+            let mut st = mailbox.state.lock().unwrap();
+            let online = st.last_poll.map(|t| t.elapsed() < LINK_ONLINE_WINDOW).unwrap_or(false);
+            if !online {
+                return reply(StatusCode::SERVICE_UNAVAILABLE, json!({"error": "router offline"}));
+            }
+            if st.queue.len() >= LINK_MAX_PENDING {
+                return reply(StatusCode::TOO_MANY_REQUESTS, json!({"error": "router busy"}));
+            }
+            st.queue.push_back((id.clone(), blob));
+            st.waiting.insert(id.clone(), tx);
+        }
+        mailbox.notify.notify_waiters();
+        match tokio::time::timeout(LINK_ANSWER_WAIT, rx).await {
+            Ok(Ok(answer)) => reply(StatusCode::OK, json!({"blob": answer})),
+            _ => {
+                let mut st = mailbox.state.lock().unwrap();
+                st.waiting.remove(&id);
+                st.queue.retain(|(q, _)| *q != id);
+                reply(StatusCode::GATEWAY_TIMEOUT, json!({"error": "router did not answer"}))
+            }
+        }
+    }
+
+    /// Router side: `/v1/link/poll` (hold until a request arrives) and `/v1/link/reply`.
+    async fn link_router(&self, req: Request<Incoming>, peer: SocketAddr, path: &str) -> Response<Full<Bytes>> {
+        let header = |name: &str| req.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_string);
+        let (Some(key_hex), Some(ts), Some(sig_hex)) = (header("x-openu60-key"), header("x-openu60-time"), header("x-openu60-sig")) else {
+            return reply(StatusCode::UNAUTHORIZED, json!({"error": "missing signature"}));
+        };
+        let body = match Limited::new(req.into_body(), LINK_MAX_REPLY + 1024).collect().await {
+            Ok(b) => b.to_bytes(),
+            Err(_) => return reply(StatusCode::PAYLOAD_TOO_LARGE, json!({"error": "body too large"})),
+        };
+        let key: [u8; 32] = match hex::decode(&key_hex).ok().and_then(|k| k.try_into().ok()) {
+            Some(k) => k,
+            None => return reply(StatusCode::UNAUTHORIZED, json!({"error": "bad key"})),
+        };
+        let Ok(ts_num) = ts.parse::<u64>() else {
+            return reply(StatusCode::UNAUTHORIZED, json!({"error": "bad time"}));
+        };
+        if now().abs_diff(ts_num) > MAX_SKEW {
+            return reply(StatusCode::UNAUTHORIZED, json!({"error": "clock skew", "server_time": now()}));
+        }
+        let digest = hex::encode(ring::digest::digest(&ring::digest::SHA256, &body));
+        let sig = hex::decode(&sig_hex).unwrap_or_default();
+        if UnparsedPublicKey::new(&ED25519, key).verify(format!("openu60-link\n{ts}\n{digest}").as_bytes(), &sig).is_err() {
+            return reply(StatusCode::UNAUTHORIZED, json!({"error": "bad signature"}));
+        }
+        // Same id the tunnel uses: the first 8 bytes of SHA-256 of the router's key.
+        let device = hex::encode(&ring::digest::digest(&ring::digest::SHA256, &key).as_ref()[..8]);
+        let mailbox = self.mailbox(&device);
+
+        if path == "/v1/link/reply" {
+            let v: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+            let (Some(id), Some(blob)) = (v["id"].as_str(), v["blob"].as_str()) else {
+                return reply(StatusCode::BAD_REQUEST, json!({"error": "bad reply"}));
+            };
+            if blob.len() > LINK_MAX_REPLY {
+                return reply(StatusCode::PAYLOAD_TOO_LARGE, json!({"error": "reply too large"}));
+            }
+            let waiter = mailbox.state.lock().unwrap().waiting.remove(id);
+            return match waiter {
+                Some(tx) => {
+                    let _ = tx.send(blob.to_string());
+                    reply(StatusCode::OK, json!({"ok": true}))
+                }
+                None => reply(StatusCode::OK, json!({"ok": false, "error": "the watch stopped waiting"})),
+            };
+        }
+
+        // Poll: hand over what is queued, or wait for something to arrive.
+        let deadline = Instant::now() + LINK_POLL_HOLD;
+        loop {
+            let notified = mailbox.notify.notified();
+            {
+                let mut st = mailbox.state.lock().unwrap();
+                st.last_poll = Some(Instant::now());
+                if !st.queue.is_empty() {
+                    let requests: Vec<Value> = st.queue.drain(..).map(|(id, blob)| json!({"id": id, "blob": blob})).collect();
+                    log(format!("link {device} from {peer}: {} request(s)", requests.len()));
+                    return reply(StatusCode::OK, json!({"requests": requests}));
+                }
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() || tokio::time::timeout(left, notified).await.is_err() {
+                mailbox.state.lock().unwrap().last_poll = Some(Instant::now());
+                return reply(StatusCode::OK, json!({"requests": []}));
+            }
+        }
+    }
+
     async fn handle(&self, req: Request<Incoming>, peer: SocketAddr) -> Response<Full<Bytes>> {
         if req.method() == Method::GET && req.uri().path() == "/healthz" {
-            return reply(StatusCode::OK, json!({"ok": true}));
+            return reply(StatusCode::OK, json!({"ok": true, "push": self.apns.is_some(), "link": true}));
+        }
+        if req.method() == Method::POST {
+            let path = req.uri().path().to_string();
+            if let Some(device) = path.strip_prefix("/v1/link/send/") {
+                let device = device.to_string();
+                return self.link_send(req, peer, &device).await;
+            }
+            if path == "/v1/link/poll" || path == "/v1/link/reply" {
+                return self.link_router(req, peer, &path).await;
+            }
         }
         if req.method() != Method::POST || req.uri().path() != "/v1/push" {
             return reply(StatusCode::NOT_FOUND, json!({"error": "not found"}));
         }
+        let Some(apns) = self.apns.as_ref() else {
+            return reply(StatusCode::SERVICE_UNAVAILABLE, json!({"error": "push is not configured on this gateway"}));
+        };
         let header = |name: &str| req.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_string);
         let (Some(key_hex), Some(ts), Some(sig_hex)) = (header("x-openu60-key"), header("x-openu60-time"), header("x-openu60-sig")) else {
             return reply(StatusCode::UNAUTHORIZED, json!({"error": "missing signature"}));
@@ -220,12 +403,18 @@ impl Gateway {
             log(format!("{router} from {peer}: refused ({why})"));
             return reply(StatusCode::TOO_MANY_REQUESTS, json!({"error": why}));
         }
-        let (status, reason) = self.apns.send(&push).await;
+        let (status, reason) = apns.send(&push).await;
         if status != 200 {
             log(format!("{router} {} {}: APNs {status} {}", push.push_type, push.env, reason.as_deref().unwrap_or("")));
         }
         reply(StatusCode::OK, json!({"status": status, "reason": reason}))
     }
+}
+
+fn rand_bytes<const N: usize>() -> [u8; N] {
+    let mut out = [0u8; N];
+    ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut out).expect("random");
+    out
 }
 
 fn reply(code: StatusCode, body: Value) -> Response<Full<Bytes>> {
@@ -256,26 +445,41 @@ fn tls_acceptor() -> TlsAcceptor {
 
 #[tokio::main]
 async fn main() {
-    let pem = std::fs::read_to_string(env("PUSHGW_APNS_KEY")).expect("read PUSHGW_APNS_KEY");
-    let apns = Apns {
-        key: SigningKey::from_pkcs8_pem(&pem).expect("APNs key must be an ES256 .p8"),
-        key_id: env("PUSHGW_KEY_ID"),
-        team_id: env("PUSHGW_TEAM_ID"),
-        bundle_id: env("PUSHGW_BUNDLE_ID"),
-        jwt: Mutex::new(None),
-        http: reqwest::Client::builder()
-            .http2_prior_knowledge()
-            .https_only(true)
-            .connect_timeout(Duration::from_secs(5))
-            .timeout(Duration::from_secs(10))
-            .build()
-            .expect("http client"),
+    let apns = match std::env::var("PUSHGW_APNS_KEY").ok().filter(|p| !p.is_empty()) {
+        Some(path) => {
+            let pem = std::fs::read_to_string(&path).expect("read PUSHGW_APNS_KEY");
+            Some(Apns {
+                key: SigningKey::from_pkcs8_pem(&pem).expect("APNs key must be an ES256 .p8"),
+                key_id: env("PUSHGW_KEY_ID"),
+                team_id: env("PUSHGW_TEAM_ID"),
+                bundle_id: env("PUSHGW_BUNDLE_ID"),
+                jwt: Mutex::new(None),
+                http: reqwest::Client::builder()
+                    .http2_prior_knowledge()
+                    .https_only(true)
+                    .connect_timeout(Duration::from_secs(5))
+                    .timeout(Duration::from_secs(10))
+                    .build()
+                    .expect("http client"),
+            })
+        }
+        None => {
+            log("PUSHGW_APNS_KEY not set: push is off, only the watch link runs");
+            None
+        }
     };
-    let gw = Arc::new(Gateway { apns, limits: Mutex::new(HashMap::new()) });
-    let acceptor = tls_acceptor();
+    let gw = Arc::new(Gateway {
+        apns,
+        limits: Mutex::new(HashMap::new()),
+        links: Mutex::new(HashMap::new()),
+        watch_limits: Mutex::new(HashMap::new()),
+    });
+    // Local testing only: plain HTTP when explicitly asked and no certificate is given.
+    let insecure = std::env::var("PUSHGW_CERT").is_err() && std::env::var("PUSHGW_INSECURE_HTTP").as_deref() == Ok("1");
+    let acceptor = if insecure { None } else { Some(tls_acceptor()) };
     let listen = std::env::var("PUSHGW_LISTEN").unwrap_or_else(|_| "0.0.0.0:443".into());
     let listener = TcpListener::bind(&listen).await.expect("bind");
-    log(format!("listening on {listen}"));
+    log(format!("listening on {listen}{}", if insecure { " (plain HTTP, local testing only)" } else { "" }));
     loop {
         let (tcp, peer) = match listener.accept().await {
             Ok(v) => v,
@@ -284,16 +488,20 @@ async fn main() {
         let acceptor = acceptor.clone();
         let gw = gw.clone();
         tokio::spawn(async move {
-            let Ok(Ok(tls)) = tokio::time::timeout(Duration::from_secs(10), acceptor.accept(tcp)).await else { return };
             let service = hyper::service::service_fn(move |req| {
                 let gw = gw.clone();
                 async move { Ok::<_, std::convert::Infallible>(gw.handle(req, peer).await) }
             });
-            let _ = tokio::time::timeout(
-                Duration::from_secs(120),
-                hyper::server::conn::http1::Builder::new().serve_connection(TokioIo::new(tls), service),
-            )
-            .await;
+            let http = hyper::server::conn::http1::Builder::new();
+            match acceptor {
+                Some(acceptor) => {
+                    let Ok(Ok(tls)) = tokio::time::timeout(Duration::from_secs(10), acceptor.accept(tcp)).await else { return };
+                    let _ = tokio::time::timeout(Duration::from_secs(120), http.serve_connection(TokioIo::new(tls), service)).await;
+                }
+                None => {
+                    let _ = tokio::time::timeout(Duration::from_secs(120), http.serve_connection(TokioIo::new(tcp), service)).await;
+                }
+            }
         });
     }
 }

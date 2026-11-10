@@ -377,6 +377,9 @@ pub fn route(method: &Method, path: &str, state: &AppState, body: &[u8]) -> (u16
     if let Some(r) = crate::tunnel::route(method, path, state, body) {
         return r;
     }
+    if let Some(r) = crate::watch_link::route(method, path, state) {
+        return r;
+    }
     match (method, path) {
         (&Method::Get, "/api/live-activity") => state.live_activity.status(),
         (&Method::Put, "/api/live-activity") => state.live_activity.register(body),

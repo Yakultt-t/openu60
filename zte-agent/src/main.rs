@@ -43,6 +43,7 @@ mod ubus;
 mod usb;
 mod voice_bridge;
 mod wifi;
+mod watch_link;
 mod wifi_wan;
 
 use std::sync::Arc;
@@ -127,6 +128,7 @@ fn main() {
     if let Some(t) = state.tunnel.as_ref() {
         tunnel::start(t);
     }
+    watch_link::start(Arc::clone(&state));
     state.tailscale.auto_start();
     state.tailscale.start_wan_watch(ts_wan_rx);
     state.mihomo.auto_start();

@@ -41,7 +41,7 @@ const JWT_LIFETIME: u64 = 50 * 60;
 /// Push gateway baked in at build time (`OPENU60_PUSH_GATEWAY`); none in public builds.
 const DEFAULT_GATEWAY: Option<&str> = option_env!("OPENU60_PUSH_GATEWAY");
 
-fn gateway_url() -> Option<String> {
+pub(crate) fn gateway_url() -> Option<String> {
     match std::env::var("ZTE_AGENT_PUSH_GATEWAY") {
         Ok(v) if v == "off" || v.is_empty() => None,
         Ok(v) => Some(v),
