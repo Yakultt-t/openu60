@@ -14,8 +14,8 @@ Thanks for your interest in contributing! This guide will help you get started.
 | Component | Path | Description |
 |---|---|---|
 | zte-agent | `zte-agent/` | Rust HTTP agent (Axum) running on the device, exposes REST API on port 9090 |
-| iOS app | `mobile/ios/` | SwiftUI companion app |
-| Android app | `mobile/android/` | Jetpack Compose companion app |
+| Touchscreen UI | `screen/` | Router screen program (openu60-screen) |
+| macOS installer | `desktop/U60Toolkit/` | U60 Toolkit (U60 刷机助手) |
 
 ## Development Setup
 

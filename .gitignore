@@ -19,9 +19,6 @@ logs/
 build/
 local.properties
 captures/
-mobile/android/**/.gradle/
-mobile/android/**/build/
-mobile/android/**/local.properties
 
 # iOS / Xcode
 DerivedData/
@@ -29,9 +26,6 @@ DerivedData/
 *.xcuserdata/
 *.xcodeproj/project.xcworkspace/xcuserdata/
 *.xcodeproj/xcuserdata/
-mobile/ios/**/build/
-mobile/ios/**/DerivedData/
-mobile/ios/**/*.xcuserstate
 
 # Apple push credentials and private device configuration
 *.p8
@@ -59,3 +53,20 @@ lpac-qrtr-build/out/
 lpac-qrtr-build/toolchain.cmake
 lpac-qrtr-build/evidence/*.log
 lpac-qrtr-build/evidence/*.txt
+
+# OpenU60: build outputs and local-only files (private state lives in $U60_HOME, default ~/u60)
+desktop/U60Toolkit/Resources/payload/zte-agent
+desktop/U60Toolkit/Resources/payload/openu60-screen
+desktop/U60Toolkit/build/
+desktop/**/*.log
+**/agent-credentials.txt
+**/config.env
+.ou60tok
+backup-*/
+call_audio_results/
+docs/research/*.log
+# U60 Toolkit: generated project and payload copies made by desktop/U60Toolkit/sync_payload.sh
+desktop/U60Toolkit/U60Toolkit.xcodeproj/
+desktop/U60Toolkit/Resources/payload/zte-agent-run.sh
+desktop/U60Toolkit/Resources/payload/wifi_uplink.sh
+desktop/U60Toolkit/Resources/payload/wifi_uplink_dhcp.sh
