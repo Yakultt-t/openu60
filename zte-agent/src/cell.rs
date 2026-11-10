@@ -85,11 +85,19 @@ pub fn cell_band_reset(_state: &AppState) -> (u16, Value) {
     }
 }
 
+/// This firmware has no "get" for Smart Tower Connect; its settings and state live in UCI.
+fn stc_uci(section: &str, key: &str) -> String {
+    ubus::uci_get(&format!("zte_nwinfo.{section}.{key}")).map(|s| s.trim().to_string()).unwrap_or_default()
+}
+
 pub fn cell_stc_params_get(_state: &AppState) -> (u16, Value) {
-    match ubus::call("zte_nwinfo_api", "nwinfo_get_stc_white_list_par", Some("{}")) {
-        Ok(data) => (200, json!({"ok": true, "data": data})),
-        Err(e) => (503, json!({"ok": false, "error": e})),
-    }
+    (200, json!({"ok": true, "data": {
+        "lte_collect_timer": stc_uci("stc_cell_lock_config", "collect_lte_cell_white_list_timer_max"),
+        "nrsa_collect_timer": stc_uci("stc_cell_lock_config", "collect_nr5g_cell_white_list_timer_max"),
+        "lte_whitelist_max": stc_uci("stc_cell_lock_config", "collect_lte_cell_white_list_num_max"),
+        "nrsa_whitelist_max": stc_uci("stc_cell_lock_config", "collect_nr5g_cell_white_list_num_max"),
+        "stc_enable": stc_uci("stc_cell_lock_status", "cell_white_list_enable_flag"),
+    }}))
 }
 
 pub fn cell_stc_params_set(_state: &AppState, body: &[u8]) -> (u16, Value) {
@@ -97,17 +105,36 @@ pub fn cell_stc_params_set(_state: &AppState, body: &[u8]) -> (u16, Value) {
         Ok(v) => v,
         Err(_) => return (400, json!({"ok": false, "error": "invalid JSON"})),
     };
-    match ubus::call("zte_nwinfo_api", "nwinfo_set_stc_white_list_par", Some(&parsed.to_string())) {
+    let pick = |app: &str, fw: &str| -> String {
+        parsed.get(app).or_else(|| parsed.get(fw)).map(|v| match v {
+            Value::String(s) => s.clone(),
+            other => other.to_string(),
+        }).unwrap_or_default()
+    };
+    let args = json!({
+        "stc_lte_collect_timer": pick("lte_collect_timer", "stc_lte_collect_timer"),
+        "stc_nrsa_collect_timer": pick("nrsa_collect_timer", "stc_nrsa_collect_timer"),
+        "stc_lte_white_list_num_max": pick("lte_whitelist_max", "stc_lte_white_list_num_max"),
+        "stc_nrsa_white_list_num_max": pick("nrsa_whitelist_max", "stc_nrsa_white_list_num_max"),
+    });
+    match ubus::call("zte_nwinfo_api", "nwinfo_set_stc_white_list_par", Some(&args.to_string())) {
         Ok(data) => (200, json!({"ok": true, "data": data})),
         Err(e) => (503, json!({"ok": false, "error": e})),
     }
 }
 
 pub fn cell_stc_status(_state: &AppState) -> (u16, Value) {
-    match ubus::call("zte_nwinfo_api", "nwinfo_get_stc_white_list_status", Some("{}")) {
-        Ok(data) => (200, json!({"ok": true, "data": data})),
-        Err(e) => (503, json!({"ok": false, "error": e})),
-    }
+    let k = |key: &str| stc_uci("stc_cell_lock_status", key);
+    (200, json!({"ok": true, "data": {
+        "stc_enable": k("cell_white_list_enable_flag"),
+        "status": k("cell_white_list_enable_flag"),
+        "available": k("cell_available_flag"),
+        "lte_whitelist_count": k("current_lte_cell_white_list_num"),
+        "nr_whitelist_count": k("current_nr5g_cell_white_list_num"),
+        "lte_timer": k("current_lte_cell_white_list_timer"),
+        "nr_timer": k("current_nr5g_cell_white_list_timer"),
+        "run_time": k("collect_cell_white_list_run_time"),
+    }}))
 }
 
 pub fn cell_stc_enable(_state: &AppState) -> (u16, Value) {

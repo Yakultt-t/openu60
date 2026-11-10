@@ -3,33 +3,47 @@ mod at_terminal;
 mod auth;
 mod bearer;
 mod cache;
+mod call_monitor;
 mod cell;
 mod charge_policy;
 mod conn_watchdog;
+mod data_plan;
 mod device_ext;
+mod dns_guard;
 pub mod doh;
 mod event_bus;
 mod handlers;
+mod adblock;
+mod missed;
+mod ims_guard;
+mod screen_api;
+mod screen_watch;
 mod lan_test;
 mod live_activity;
 mod mihomo;
+mod mms;
 mod modem_ext;
 mod network_ext;
 mod oos_policy;
+mod push;
 mod router;
 mod scheduler;
 mod server;
 mod sim;
 mod sms;
+mod sms_crypto;
 mod sms_forward;
 mod speedtest;
 mod stk;
 mod system;
 mod tailscale;
 mod telephony;
+mod tunnel;
 mod ubus;
 mod usb;
+mod voice_bridge;
 mod wifi;
+mod wifi_wan;
 
 use std::sync::Arc;
 
@@ -37,9 +51,10 @@ use event_bus::EventBus;
 use handlers::AppState;
 
 const DEFAULT_BIND: &str = "0.0.0.0:9090";
-// 4 workers: tailscale setup/logout are legitimately slow (up to ~1-2 min
-// against the control plane) and must not starve the rest of the API.
-const DEFAULT_THREADS: usize = 4;
+// 8 workers: tailscale setup/logout are legitimately slow (up to ~1-2 min against the
+// control plane), and call-status long polls park a worker for seconds at a time; neither
+// may starve the rest of the API.
+const DEFAULT_THREADS: usize = 8;
 
 fn main() {
     let bind = std::env::var("ZTE_AGENT_BIND").unwrap_or_else(|_| DEFAULT_BIND.to_string());
@@ -54,10 +69,13 @@ fn main() {
     if let Ok(pw) = std::env::var("ZTE_AGENT_PASSWORD") {
         state.auth.set_password(&pw);
     }
+    // On-device clients (the touchscreen UI) read this to reach the API over loopback.
+    state.auth.publish_local_token();
 
     // Event bus: single `ubus listen` process dispatches to subscribers
     let event_bus = EventBus::new();
     let sms_rx = event_bus.subscribe("zwrt_wms_status_event");
+    let push_sms_rx = event_bus.subscribe("zwrt_wms_status_event");
     let charger_rx = event_bus.subscribe("BSP_CHARGER_EVENT");
     let service_rx = event_bus.subscribe("zwrt_servicestatus");
     let wan_status_rx = event_bus.subscribe("router_event_wan_connect_status");
@@ -97,6 +115,18 @@ fn main() {
         .charge_limit
         .start(charger_rx, Arc::clone(&state.cache));
     state.sms_forward.start(sms_rx, service_rx, wan_status_rx);
+    state.push.start(push_sms_rx, Arc::clone(&state));
+    state.mms.start(Arc::clone(&state.push));
+    state.data_plan.start(Arc::clone(&state));
+    state.call_monitor.start(Arc::clone(&state));
+    ims_guard::start();
+    screen_watch::start();
+    state.adblock.start();
+    dns_guard::start();
+    wifi_wan::start_guard();
+    if let Some(t) = state.tunnel.as_ref() {
+        tunnel::start(t);
+    }
     state.tailscale.auto_start();
     state.tailscale.start_wan_watch(ts_wan_rx);
     state.mihomo.auto_start();
@@ -165,7 +195,8 @@ fn busy_check(state: &Arc<AppState>) -> Box<dyn Fn() -> Option<&'static str> + S
 /// must carry the final `OK` and list no `+CLCC:` entries. Anything else
 /// (empty, truncated, `ERROR`) is inconclusive and must not clear the flag.
 fn clcc_confirms_idle(resp: &str) -> bool {
-    resp.contains("OK") && telephony::parse_clcc(resp).is_empty()
+    // Data bearers (mode 1/2) are always listed on this modem; only a voice line is a call.
+    resp.contains("OK") && telephony::parse_clcc(resp).iter().all(|c| c["mode"].as_i64() != Some(0))
 }
 
 #[cfg(test)]
@@ -176,6 +207,9 @@ mod tests {
     fn clcc_idle_only_on_final_ok_without_calls() {
         assert!(clcc_confirms_idle("\r\nOK\r\n"));
         assert!(clcc_confirms_idle("AT+CLCC\r\r\nOK\r\n"));
+        // The two permanent data bearers this modem always lists are not calls.
+        assert!(clcc_confirms_idle("+CLCC: 1,1,0,1,0,\"\",128\r\n+CLCC: 2,1,0,1,0,\"\",128\r\n\r\nOK\r\n"));
+        assert!(!clcc_confirms_idle("+CLCC: 1,1,0,1,0,\"\",128\r\n+CLCC: 4,1,4,0,0,\"\",128\r\n\r\nOK\r\n"));
     }
 
     #[test]

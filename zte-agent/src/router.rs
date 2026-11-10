@@ -142,8 +142,13 @@ pub fn router_firewall_dmz_set(_state: &AppState, body: &[u8]) -> (u16, Value) {
 }
 
 pub fn router_firewall_upnp_get(_state: &AppState) -> (u16, Value) {
-    match ubus::call("zwrt_router.api", "router_get_upnp_switch", Some("{}")) {
-        Ok(data) => (200, json!({"ok": true, "data": data})),
+    // This firmware names it router_get_upnp and reports enable_upnp.
+    match ubus::call("zwrt_router.api", "router_get_upnp", Some("{}")) {
+        Ok(mut data) => {
+            let on = data["enable_upnp"].as_str().unwrap_or("0").to_string();
+            data["upnp_switch"] = Value::String(on);
+            (200, json!({"ok": true, "data": data}))
+        }
         Err(e) => (503, json!({"ok": false, "error": e})),
     }
 }
@@ -153,7 +158,18 @@ pub fn router_firewall_upnp_set(_state: &AppState, body: &[u8]) -> (u16, Value) 
         Ok(v) => v,
         Err(_) => return (400, json!({"ok": false, "error": "invalid JSON"})),
     };
-    match ubus::call("zwrt_router.api", "router_set_upnp_switch", Some(&parsed.to_string())) {
+    let current = ubus::call("zwrt_router.api", "router_get_upnp", Some("{}")).unwrap_or(Value::Null);
+    let num = |v: &Value, default: i64| -> i64 {
+        v.as_i64().or_else(|| v.as_str().and_then(|s| s.trim().parse().ok())).unwrap_or(default)
+    };
+    let want = parsed.get("upnp_switch").or_else(|| parsed.get("enable_upnp")).map(|v| num(v, 0)).unwrap_or(0);
+    let args = json!({
+        "enable_upnp": want,
+        "notify_interval": num(&current["notify_interval"], 60),
+        "ttl": num(&current["ttl"], 4),
+        "natpmp": num(&current["enable_natpmp"], 0),
+    });
+    match ubus::call("zwrt_router.api", "router_set_upnp_switch", Some(&args.to_string())) {
         Ok(data) => (200, json!({"ok": true, "data": data})),
         Err(e) => (503, json!({"ok": false, "error": e})),
     }
@@ -214,8 +230,20 @@ pub fn router_vpn_set(_state: &AppState, body: &[u8]) -> (u16, Value) {
 }
 
 pub fn router_qos_get(_state: &AppState) -> (u16, Value) {
-    match ubus::call("zwrt_router.api", "router_get_qos_switch", Some("{}")) {
-        Ok(data) => (200, json!({"ok": true, "data": data})),
+    // router_get_qos; an unconfigured router answers {} which means "off".
+    match ubus::call("zwrt_router.api", "router_get_qos", Some("{}")) {
+        Ok(mut data) => {
+            if !data.is_object() {
+                data = json!({});
+            }
+            let on = data["qos_smart_switch"]
+                .as_str()
+                .map(str::to_string)
+                .or_else(|| data["qos_smart_switch"].as_i64().map(|n| n.to_string()))
+                .unwrap_or_else(|| "0".into());
+            data["qos_switch"] = Value::String(on);
+            (200, json!({"ok": true, "data": data}))
+        }
         Err(e) => (503, json!({"ok": false, "error": e})),
     }
 }
@@ -225,7 +253,20 @@ pub fn router_qos_set(_state: &AppState, body: &[u8]) -> (u16, Value) {
         Ok(v) => v,
         Err(_) => return (400, json!({"ok": false, "error": "invalid JSON"})),
     };
-    match ubus::call("zwrt_router.api", "router_set_qos_switch", Some(&parsed.to_string())) {
+    let current = ubus::call("zwrt_router.api", "router_get_qos", Some("{}")).unwrap_or(Value::Null);
+    let num = |v: &Value, default: i64| -> i64 {
+        v.as_i64().or_else(|| v.as_str().and_then(|s| s.trim().parse().ok())).unwrap_or(default)
+    };
+    let want = parsed.get("qos_switch").or_else(|| parsed.get("qos_smart_switch")).map(|v| num(v, 0)).unwrap_or(0);
+    let args = json!({
+        "upload_total_limit_rate": num(&current["upload_total_limit_rate"], 0),
+        "upload_total_limit_unit": num(&current["upload_total_limit_unit"], 0),
+        "download_total_limit_rate": num(&current["download_total_limit_rate"], 0),
+        "download_total_limit_unit": num(&current["download_total_limit_unit"], 0),
+        "qos_smart_switch": want,
+        "qos_smart_pri_type": num(&current["qos_smart_pri_type"], 0),
+    });
+    match ubus::call("zwrt_router.api", "router_set_qos", Some(&args.to_string())) {
         Ok(data) => (200, json!({"ok": true, "data": data})),
         Err(e) => (503, json!({"ok": false, "error": e})),
     }

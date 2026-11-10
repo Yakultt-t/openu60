@@ -152,32 +152,25 @@ pub struct ForwardLogEntry {
 
 // ── SMS message from ubus ───────────────────────────────────────────
 
-struct DecodedSms {
-    id: u64,
-    sender: String,
-    content: String,
-    date: String,
+pub(crate) struct DecodedSms {
+    pub(crate) id: u64,
+    pub(crate) sender: String,
+    pub(crate) content: String,
+    pub(crate) date: String,
 }
 
 // ── UCS-2 hex decoding ──────────────────────────────────────────────
 
+/// Decode UTF-16BE hex (the firmware's "UCS-2"). Surrogate pairs are joined, so emoji
+/// survive; a lone half becomes U+FFFD.
 fn decode_ucs2_hex(hex: &str) -> String {
-    let hex = hex.trim();
-    if hex.is_empty() {
-        return String::new();
-    }
-    let mut chars = Vec::new();
-    let mut i = 0;
-    let bytes = hex.as_bytes();
-    while i + 4 <= bytes.len() {
-        if let Ok(code) = u16::from_str_radix(&hex[i..i + 4], 16) {
-            if let Some(ch) = char::from_u32(code as u32) {
-                chars.push(ch);
-            }
-        }
-        i += 4;
-    }
-    chars.into_iter().collect()
+    let units: Vec<u16> = hex
+        .trim()
+        .as_bytes()
+        .chunks_exact(4)
+        .filter_map(|c| std::str::from_utf8(c).ok().and_then(|s| u16::from_str_radix(s, 16).ok()))
+        .collect();
+    String::from_utf16_lossy(&units)
 }
 
 /// Check if a string looks like UCS-2 hex (all hex chars, length multiple of 4).
@@ -494,7 +487,13 @@ fn cleanup_forwarded_sms(forward_number: &str) {
     std::thread::sleep(Duration::from_millis(200));
 
     // Fetch latest sent messages (tag=2)
-    let messages = fetch_sms_both_stores(2, 0, 5, "order by id desc");
+    let messages = match fetch_sms_decrypted(2, 0, 5, "order by id desc") {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("[sms_forward] cleanup: cannot read sent SMS: {e}");
+            return;
+        }
+    };
 
     // Find the most recent sent SMS to the forward number
     let normalized_dest = normalize_phone(forward_number);
@@ -972,6 +971,34 @@ fn fetch_sms_both_stores(tags: u64, page: u64, count: u64, order: &str) -> Vec<V
     all
 }
 
+/// `fetch_sms_both_stores` with `number`/`content` decrypted. The international (STD)
+/// firmware encrypts both with the agent's session key (see `sms_crypto`); left alone they
+/// reach notifications and forwards as base64 ciphertext. A browser login or an agent
+/// restart leaves the key stale, so one re-key and refetch covers that, as in `sms::sms_list`.
+fn fetch_sms_decrypted(tags: u64, page: u64, count: u64, order: &str) -> Result<Vec<Value>, String> {
+    let mut list = fetch_sms_both_stores(tags, page, count, order);
+    if let Err(first) = decrypt_list(&mut list) {
+        eprintln!("[sms_forward] decrypt failed ({first}); re-keying");
+        crate::sms_crypto::rekey()?;
+        list = fetch_sms_both_stores(tags, page, count, order);
+        decrypt_list(&mut list)?;
+    }
+    Ok(list)
+}
+
+/// Decrypt `number`/`content` in place, leaving the firmware's UCS-2 hex for the caller.
+fn decrypt_list(list: &mut [Value]) -> Result<(), String> {
+    for item in list.iter_mut() {
+        for field in ["number", "content"] {
+            let Some(raw) = item[field].as_str().map(str::to_string) else { continue };
+            if let Some(plain) = crate::sms_crypto::decrypt_field(&raw)? {
+                item[field] = Value::String(plain);
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Returns the unread SMS count.
 fn fetch_sms_capacity() -> Result<u64, String> {
     let data = ubus::call("zwrt_wms", "zwrt_wms_get_wms_capacity", Some("{}"))?;
@@ -986,12 +1013,17 @@ fn fetch_sms_capacity() -> Result<u64, String> {
 }
 
 /// Fetch SMS list and return messages with id > after_id, sorted ascending.
-fn fetch_new_messages(after_id: u64) -> Result<Vec<DecodedSms>, String> {
-    let sms_list = fetch_sms_both_stores(1, 0, 50, "order by id desc");
+pub(crate) fn fetch_new_messages(after_id: u64) -> Result<Vec<DecodedSms>, String> {
+    let sms_list = fetch_sms_decrypted(1, 0, 50, "order by id desc")?;
+    Ok(decode_new(&sms_list, after_id))
+}
 
+/// Received messages newer than `after_id` from a decrypted `zte_libwms_get_sms_data`
+/// list, with number and text decoded from UCS-2 hex.
+fn decode_new(sms_list: &[Value], after_id: u64) -> Vec<DecodedSms> {
     let mut messages: Vec<DecodedSms> = Vec::new();
 
-    for item in &sms_list {
+    for item in sms_list {
         let id = item["id"]
             .as_u64()
             .or_else(|| item["id"].as_str().and_then(|s| s.parse().ok()))
@@ -1040,11 +1072,11 @@ fn fetch_new_messages(after_id: u64) -> Result<Vec<DecodedSms>, String> {
     }
 
     messages.sort_by_key(|m| m.id);
-    Ok(messages)
+    messages
 }
 
 /// Get the maximum SMS id currently on the device.
-fn fetch_max_sms_id() -> Result<u64, String> {
+pub(crate) fn fetch_max_sms_id() -> Result<u64, String> {
     let all = fetch_sms_both_stores(10, 0, 5, "order by id desc");
 
     let max_id = all
@@ -1366,5 +1398,68 @@ pub fn retry_forward(state: &AppState, body: &[u8]) -> (u16, Value) {
     match result {
         Ok(()) => (200, json!({"ok": true, "data": {"status": "sent"}})),
         Err(e) => (502, json!({"ok": false, "error": e})),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The session key is process-global; keep the tests that set it from interleaving.
+    static KEY_LOCK: Mutex<()> = Mutex::new(());
+
+    const NUMBER: &str = "+8613800000000";
+
+    #[test]
+    fn ucs2_hex_keeps_emoji() {
+        let text = "验证码 123456，请勿泄露 😀";
+        assert_eq!(decode_ucs2_hex(&encode_ucs2_hex(text)), text);
+    }
+
+    #[test]
+    fn plain_ucs2_items_decode_without_a_key() {
+        // Firmware without field encryption: no key is needed and nothing is touched.
+        let items = vec![json!({
+            "id": "7", "tag": "1", "date": "26,11,07,19,33,30,+32",
+            "number": encode_ucs2_hex(NUMBER), "content": encode_ucs2_hex("Hello 你好"),
+        })];
+        let mut list = items.clone();
+        decrypt_list(&mut list).unwrap();
+        assert_eq!(list, items);
+        let out = decode_new(&list, 0);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].sender, NUMBER);
+        assert_eq!(out[0].content, "Hello 你好");
+    }
+
+    #[test]
+    fn encrypted_items_decode_to_text() {
+        let _guard = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::sms_crypto::set_key_for_tests([7u8; 32]);
+        let enc = |s: &str| crate::sms_crypto::encrypt_field(&encode_ucs2_hex(s)).unwrap();
+        let mut list = vec![
+            json!({"id": 54, "tag": "0", "date": "26,11,07,19,33,30,+32",
+                   "number": enc(NUMBER), "content": enc("【测试】验证码 123456 😀")}),
+            json!({"id": 50, "tag": "2", "date": "", "number": enc("10086"), "content": enc("sent")}),
+        ];
+        decrypt_list(&mut list).unwrap();
+        let out = decode_new(&list, 0);
+        assert_eq!(out.len(), 1, "sent messages are skipped");
+        assert_eq!(out[0].id, 54);
+        assert_eq!(out[0].sender, NUMBER);
+        assert_eq!(out[0].content, "【测试】验证码 123456 😀");
+        assert!(decode_new(&list, 54).is_empty());
+    }
+
+    #[test]
+    fn stale_key_is_an_error_not_ciphertext() {
+        // Read with a different key than the firmware used: the caller must re-key, never
+        // pass the ciphertext on as message text.
+        let _guard = KEY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::sms_crypto::set_key_for_tests([1u8; 32]);
+        let ct = crate::sms_crypto::encrypt_field(&encode_ucs2_hex("hello there")).unwrap();
+        crate::sms_crypto::set_key_for_tests([2u8; 32]);
+        let mut list = vec![json!({"id": 1, "tag": "0", "number": "", "content": ct})];
+        assert!(decrypt_list(&mut list).is_err());
     }
 }

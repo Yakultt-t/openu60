@@ -173,6 +173,13 @@ pub fn wifi_status(_state: &AppState) -> (u16, Value) {
     result.insert("txpower_5g".into(), json!(uci_get_wireless("wifi1.txpowerpercent")));
     result.insert("htmode_2g".into(), json!(uci_get_wireless("wifi0.htmode")));
     result.insert("htmode_5g".into(), json!(uci_get_wireless("wifi1.htmode")));
+    // Wi-Fi 7 is the radios' PHY mode (11beg/11bea); the vendor's `wifi6_switch` flag is not
+    // read by this firmware's Wi-Fi scripts.
+    let hw2 = uci_get_wireless("wifi0.hwmode");
+    let hw5 = uci_get_wireless("wifi1.hwmode");
+    result.insert("hwmode_2g".into(), json!(hw2));
+    result.insert("hwmode_5g".into(), json!(hw5));
+    result.insert("wifi7_enabled".into(), json!(hw2.starts_with("11be") && hw5.starts_with("11be")));
     result.insert("country_code".into(), json!(uci_get_wireless("wifi0.country")));
 
     // Interface config
@@ -212,15 +219,39 @@ pub fn wifi_status(_state: &AppState) -> (u16, Value) {
 // PUT /api/wifi/settings
 // ---------------------------------------------------------------------------
 
+/// The channel width in the 802.11be (EHT…) or 802.11ax (HE…) family; "Auto" stays.
+fn htmode_family(width: &str, wifi7: bool) -> String {
+    let bare = width.strip_prefix("EHT").or_else(|| width.strip_prefix("HE")).or_else(|| width.strip_prefix("VHT")).or_else(|| width.strip_prefix("HT"));
+    match bare {
+        Some(n) if !n.is_empty() => format!("{}{n}", if wifi7 { "EHT" } else { "HE" }),
+        _ => width.to_string(),
+    }
+}
+
 pub fn wifi_set(_state: &AppState, body: &[u8]) -> (u16, Value) {
     let parsed: Value = match serde_json::from_slice(body) {
         Ok(v) => v,
         Err(_) => return (400, json!({"ok": false, "error": "invalid JSON"})),
     };
-    let obj = match parsed.as_object() {
-        Some(o) => o,
+    let mut obj = match parsed.as_object() {
+        Some(o) => o.clone(),
         None => return (400, json!({"ok": false, "error": "expected JSON object"})),
     };
+    // "wifi7": true/false switches both radios between 802.11be and 802.11ax, and moves the
+    // channel width to the matching family (EHT160 <-> HE160), which hostapd requires.
+    if let Some(on) = obj.remove("wifi7").and_then(|v| v.as_bool().or_else(|| v.as_str().map(|s| s == "1" || s == "true"))) {
+        let current = match Wireless::load() {
+            Ok(w) => w,
+            Err(e) => return (503, json!({"ok": false, "error": e})),
+        };
+        obj.insert("hwmode_2g".into(), json!(if on { "11beg" } else { "11axg" }));
+        obj.insert("hwmode_5g".into(), json!(if on { "11bea" } else { "11axa" }));
+        for (key, radio) in [("htmode_2g", "wifi0.htmode"), ("htmode_5g", "wifi1.htmode")] {
+            let width = obj.get(key).and_then(|v| v.as_str().map(String::from)).unwrap_or_else(|| current.get(radio));
+            obj.insert(key.into(), json!(htmode_family(&width, on)));
+        }
+        obj.remove("wifi6_switch");
+    }
 
     let uci_map: &[(&str, &str)] = &[
         ("ssid_2g", "wireless.main_2g.ssid"),
@@ -237,6 +268,8 @@ pub fn wifi_set(_state: &AppState, body: &[u8]) -> (u16, Value) {
         ("txpower_5g", "wireless.wifi1.txpowerpercent"),
         ("htmode_2g", "wireless.wifi0.htmode"),
         ("htmode_5g", "wireless.wifi1.htmode"),
+        ("hwmode_2g", "wireless.wifi0.hwmode"),
+        ("hwmode_5g", "wireless.wifi1.hwmode"),
         ("radio2_disabled", "wireless.wifi0.disabled"),
         ("radio5_disabled", "wireless.wifi1.disabled"),
     ];
@@ -260,7 +293,7 @@ pub fn wifi_set(_state: &AppState, body: &[u8]) -> (u16, Value) {
         Err(e) => return (503, json!({"ok": false, "error": e})),
     };
 
-    for (key, value) in obj {
+    for (key, value) in &obj {
         let val_str = match value {
             Value::String(s) => s.clone(),
             Value::Number(n) => n.to_string(),
@@ -480,5 +513,16 @@ mod wireless_tests {
         assert!(w.0.is_empty());
         assert!(!w.0.contains_key("wireless.zte_mbb.wifi_onoff"));
         assert_eq!(w.get("main_2g.ssid"), "");
+    }
+}
+
+#[cfg(test)]
+mod wifi7_tests {
+    #[test]
+    fn width_follows_the_phy_family() {
+        assert_eq!(super::htmode_family("EHT160", false), "HE160");
+        assert_eq!(super::htmode_family("HE40", true), "EHT40");
+        assert_eq!(super::htmode_family("EHT20_40", true), "EHT20_40");
+        assert_eq!(super::htmode_family("Auto", false), "Auto");
     }
 }

@@ -239,7 +239,13 @@ fn number(data: &[u8], offset: usize) -> Result<u32, String> {
 impl Session {
     fn connect(path: &str) -> Result<Self, String> {
         let stream =
-            UnixStream::connect(path).map_err(|e| format!("RIL connection failed: {e}"))?;
+            UnixStream::connect(path).map_err(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    "SIM toolkit not available: this firmware is not running the radio interface (qcrild)".to_string()
+                } else {
+                    format!("RIL connection failed: {e}")
+                }
+            })?;
         stream
             .set_read_timeout(Some(Duration::from_millis(100)))
             .map_err(|e| e.to_string())?;

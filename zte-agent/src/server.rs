@@ -9,6 +9,7 @@ use crate::cell;
 use crate::conn_watchdog;
 use crate::device_ext;
 use crate::lan_test;
+use crate::mms;
 use crate::scheduler;
 use crate::handlers::{self, AppState};
 use crate::mihomo;
@@ -24,6 +25,7 @@ use crate::tailscale;
 use crate::telephony;
 use crate::usb;
 use crate::wifi;
+use crate::wifi_wan;
 
 /// 嵌入的 Web 管理面板（web-admin vite 单文件构建产物）。
 /// build.rs 保证该文件存在（未构建前端时为占位页）。
@@ -70,9 +72,97 @@ pub fn start(bind: &str, threads: usize, state: Arc<AppState>) {
         handles.push(handle);
     }
 
+    start_bootstrap(Arc::clone(&state));
+
     for h in handles {
         let _ = h.join();
     }
+}
+
+/// Loopback listener for phones the tunnel does not know yet (see tunnel.rs): only login and
+/// pairing are served, and wrong passwords are throttled hard, because anyone who knows the
+/// router's id and public key can reach this port through the relay.
+fn start_bootstrap(state: Arc<AppState>) {
+    let bind = std::env::var("ZTE_AGENT_BOOTSTRAP_BIND").unwrap_or_else(|_| "127.0.0.1:9092".to_string());
+    let listener = match std::net::TcpListener::bind(&bind) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("[server] bootstrap bind {bind}: {e}");
+            return;
+        }
+    };
+    let server = match Server::from_listener(listener, None) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[server] bootstrap server: {e}");
+            return;
+        }
+    };
+    // Several workers: a phone keeps HTTP connections alive, and tiny_http parks a worker on
+    // an idle keep-alive connection, so one thread would block every later request.
+    let server = Arc::new(server);
+    for i in 0..4 {
+        let server = Arc::clone(&server);
+        let state = Arc::clone(&state);
+        crate::system::spawn_named(&format!("http-bootstrap-{i}"), move || loop {
+            let request = match server.recv() {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            handle_bootstrap(request, &state);
+        });
+    }
+}
+
+const BOOTSTRAP_MAX_FAILURES: usize = 10;
+const BOOTSTRAP_WINDOW_SECS: u64 = 15 * 60;
+
+static BOOTSTRAP_FAILURES: std::sync::Mutex<Vec<std::time::Instant>> = std::sync::Mutex::new(Vec::new());
+
+fn handle_bootstrap(mut request: Request, state: &AppState) {
+    let method = request.method().clone();
+    let url = request.url().to_string();
+    let path = url.split('?').next().unwrap_or(&url).to_string();
+    let mut body = Vec::new();
+    let _ = request.as_reader().read_to_end(&mut body);
+    let token_ok = request
+        .headers()
+        .iter()
+        .find(|h| h.field.as_str().to_ascii_lowercase() == "authorization")
+        .and_then(|h| h.value.as_str().strip_prefix("Bearer "))
+        .map(|token| state.auth.validate(token) || state.tunnel.as_ref().map(|t| t.validate_token(token)).unwrap_or(false))
+        .unwrap_or(false);
+    let (status, reply) = match (&method, path.as_str()) {
+        (&Method::Post, "/api/auth/login") => {
+            let throttled = {
+                let mut fails = BOOTSTRAP_FAILURES.lock().unwrap();
+                fails.retain(|t| t.elapsed().as_secs() < BOOTSTRAP_WINDOW_SECS);
+                fails.len() >= BOOTSTRAP_MAX_FAILURES
+            };
+            if throttled {
+                (429, json!({"ok": false, "error": "too many attempts, try again later"}))
+            } else {
+                let (status, reply) = crate::handlers::login(state, &body);
+                if status != 200 {
+                    BOOTSTRAP_FAILURES.lock().unwrap().push(std::time::Instant::now());
+                }
+                (status, reply)
+            }
+        }
+        (&Method::Get, "/api/tunnel/info") | (&Method::Post, "/api/tunnel/pair") if token_ok => {
+            crate::tunnel::route(&method, &path, state, &body).unwrap_or((404, json!({"ok": false, "error": "not found"})))
+        }
+        (_, "/api/tunnel/info") | (_, "/api/tunnel/pair") => (401, json!({"ok": false, "error": "unauthorized"})),
+        _ => (403, json!({"ok": false, "error": "pair this device first"})),
+    };
+    eprintln!("[bootstrap] {} {} -> {status}", method, path);
+    // Close after every reply so a worker never sits on an idle connection.
+    let body_str = serde_json::to_string(&reply).unwrap_or_default();
+    let response = Response::from_string(body_str)
+        .with_status_code(status)
+        .with_header(Header::from_bytes("Content-Type", "application/json").unwrap())
+        .with_header(Header::from_bytes("Connection", "close").unwrap());
+    let _ = request.respond(response);
 }
 
 /// SO_KEEPALIVE with a 5 min idle / 60 s interval / 3 probes: a dead peer is
@@ -128,6 +218,21 @@ fn handle_request(mut request: Request, state: &AppState) {
         return;
     }
 
+    if method == Method::Post && matches!(path, "/api/call/hangup" | "/api/call/answer" | "/api/call/dial" | "/api/call/audio/start") {
+        let ua = request
+            .headers()
+            .iter()
+            .find(|h| h.field.as_str().to_ascii_lowercase() == "user-agent")
+            .map(|h| h.value.as_str().chars().take(60).collect::<String>())
+            .unwrap_or_default();
+        eprintln!(
+            "[call] {} from {} ({ua}) at {}",
+            path.trim_start_matches("/api/call/"),
+            request.remote_addr().map(|a| a.to_string()).unwrap_or_else(|| "?".into()),
+            crate::conn_watchdog::unix_now()
+        );
+    }
+
     // Auth check — skip for login endpoint
     let needs_auth = path != "/api/auth/login";
     if needs_auth {
@@ -136,7 +241,12 @@ fn handle_request(mut request: Request, state: &AppState) {
             .iter()
             .find(|h| h.field.as_str().to_ascii_lowercase() == "authorization")
             .and_then(|h| h.value.as_str().strip_prefix("Bearer "))
-            .map(|token| state.auth.validate(token))
+            .map(|token| {
+                state.auth.validate(token)
+                    || state.tunnel.as_ref().map(|t| t.validate_token(token)).unwrap_or(false)
+                    || (state.auth.is_local_token(token)
+                        && request.remote_addr().map(|a| a.ip().is_loopback()).unwrap_or(false))
+            })
             .unwrap_or(false);
 
         if !state.auth.has_password() {
@@ -158,6 +268,22 @@ fn handle_request(mut request: Request, state: &AppState) {
         }
         (&Method::Post, "/api/lan/upload") => {
             let (status, body_json) = lan_test::upload(&mut request);
+            respond(request, status, body_json);
+            return;
+        }
+        // Needs the query string (long-poll parameters), which route() does not see.
+        (&Method::Get, "/api/call/status") => {
+            let wait = parse_query_usize(&url, "wait").map(|ms| std::time::Duration::from_millis(ms as u64));
+            let since = parse_query_usize(&url, "since").map(|v| v as u64);
+            if let Some(device) = parse_query_str(&url, "device") {
+                state.push.note_poll(&device);
+            }
+            let (status, body_json) = state.call_monitor.status(state, wait, since);
+            respond(request, status, body_json);
+            return;
+        }
+        (&Method::Delete, "/api/push/register") => {
+            let (status, body_json) = state.push.unregister(parse_query_str(&url, "device").as_deref());
             respond(request, status, body_json);
             return;
         }
@@ -192,6 +318,12 @@ fn handle_request(mut request: Request, state: &AppState) {
         return;
     }
 
+    // MMS part bytes stream straight from disk.
+    if method == Method::Get && mms::handlers::is_part_path(path) {
+        mms::handlers::serve_part(request, state, path);
+        return;
+    }
+
     // Read body, with tight limits for the paths that accept raw YAML.
     let mut body = Vec::new();
     if path.starts_with("/api/live-activity") {
@@ -215,6 +347,18 @@ fn handle_request(mut request: Request, state: &AppState) {
     respond(request, status, body_json);
 }
 
+fn parse_query_str(url: &str, key: &str) -> Option<String> {
+    let query = url.split('?').nth(1)?;
+    for pair in query.split('&') {
+        let mut kv = pair.splitn(2, '=');
+        if kv.next()? == key {
+            let v: String = kv.next()?.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').take(64).collect();
+            return (!v.is_empty()).then_some(v);
+        }
+    }
+    None
+}
+
 fn parse_query_usize(url: &str, key: &str) -> Option<usize> {
     let query = url.split('?').nth(1)?;
     for pair in query.split('&') {
@@ -227,6 +371,12 @@ fn parse_query_usize(url: &str, key: &str) -> Option<usize> {
 }
 
 pub fn route(method: &Method, path: &str, state: &AppState, body: &[u8]) -> (u16, Value) {
+    if let Some(r) = mms::handlers::route(method, path, state, body) {
+        return r;
+    }
+    if let Some(r) = crate::tunnel::route(method, path, state, body) {
+        return r;
+    }
     match (method, path) {
         (&Method::Get, "/api/live-activity") => state.live_activity.status(),
         (&Method::Put, "/api/live-activity") => state.live_activity.register(body),
@@ -287,8 +437,17 @@ pub fn route(method: &Method, path: &str, state: &AppState, body: &[u8]) -> (u16
         (&Method::Put, "/api/wifi/settings") => wifi::wifi_set(state, body),
         (&Method::Get, "/api/wifi/guest") => wifi::guest_status(state),
         (&Method::Put, "/api/wifi/guest") => wifi::guest_set(state, body),
+        // WiFi uplink (station / repeater mode)
+        (&Method::Get, "/api/wifi/wan/status") => wifi_wan::status(state),
+        (&Method::Post, "/api/wifi/wan/scan") => wifi_wan::scan_start(state),
+        (&Method::Get, "/api/wifi/wan/scan") => wifi_wan::scan_results(state),
+        (&Method::Post, "/api/wifi/wan/connect") => wifi_wan::connect(state, body),
+        (&Method::Post, "/api/wifi/wan/disconnect") => wifi_wan::disconnect(state),
+        (&Method::Put, "/api/wifi/wan/mode") => wifi_wan::mode_set(state, body),
         // Modem
         (&Method::Get, "/api/data-usage") => handlers::data_usage(state),
+        (&Method::Get, "/api/data-plan") => state.data_plan.get(),
+        (&Method::Put, "/api/data-plan") => state.data_plan.set(body),
         (&Method::Get, "/api/modem/status") => handlers::modem_status(state),
         (&Method::Post, "/api/modem/online") => modem_ext::modem_online_user(state),
         (&Method::Get, "/api/modem/data") => modem_ext::modem_data_get(state),
@@ -391,9 +550,25 @@ pub fn route(method: &Method, path: &str, state: &AppState, body: &[u8]) -> (u16
         (&Method::Post, "/api/call/dial") => telephony::call_dial(state, body),
         (&Method::Post, "/api/call/hangup") => telephony::call_hangup(state),
         (&Method::Post, "/api/call/answer") => telephony::call_answer(state),
-        (&Method::Get, "/api/call/status") => telephony::call_status(state),
         (&Method::Post, "/api/call/dtmf") => telephony::call_dtmf(state, body),
         (&Method::Post, "/api/call/mute") => telephony::call_mute(state, body),
+        (&Method::Post, "/api/call/audio/start") => match state.voice_bridge.start() {
+            Ok(v) => (200, json!({"ok": true, "data": v})),
+            Err(e) => (503, json!({"ok": false, "error": e})),
+        },
+        (&Method::Post, "/api/call/audio/stop") => (200, json!({"ok": true, "data": state.voice_bridge.stop()})),
+        (&Method::Get, "/api/call/audio/status") => (200, json!({"ok": true, "data": state.voice_bridge.status()})),
+        (&Method::Put, "/api/call/audio/settings") => {
+            let parsed: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+            match state.voice_bridge.set_mic_mode(parsed["mic_mode"].as_str().unwrap_or("")) {
+                Ok(v) => (200, json!({"ok": true, "data": v})),
+                Err(e) => (400, json!({"ok": false, "error": e})),
+            }
+        }
+        (&Method::Get, "/api/push/status") => state.push.status(),
+        (&Method::Put, "/api/push/register") => state.push.register(body),
+        (&Method::Delete, "/api/push/register") => state.push.unregister(None),
+        (&Method::Post, "/api/push/test") => state.push.test(),
         // Telephony — USSD
         (&Method::Post, "/api/ussd/send") => telephony::ussd_send(state, body),
         (&Method::Post, "/api/ussd/respond") => telephony::ussd_respond(state, body),
@@ -406,6 +581,18 @@ pub fn route(method: &Method, path: &str, state: &AppState, body: &[u8]) -> (u16
         (&Method::Post, "/api/stk/cancel") => state.stk.request("cancel", body),
         (&Method::Post, "/api/stk/back") => state.stk.request("back", body),
         // DoH
+        (&Method::Get, "/api/call/missed") => crate::missed::list(),
+        (&Method::Post, "/api/call/missed/clear") => crate::missed::clear(),
+        (&Method::Get, "/api/screen/settings") => crate::screen_api::get(),
+        (&Method::Put, "/api/screen/settings") => crate::screen_api::put(body),
+        (&Method::Put, "/api/screen/wallpaper") => crate::screen_api::put_wallpaper(body),
+        (&Method::Delete, "/api/screen/wallpaper") => crate::screen_api::delete_wallpaper(),
+        (&Method::Post, "/api/screen/open") => crate::screen_api::open(),
+        (&Method::Get, "/api/adblock/status") => state.adblock.status(),
+        (&Method::Put, "/api/adblock/config") => state.adblock.config_set(body),
+        (&Method::Post, "/api/adblock/pause") => state.adblock.pause(body),
+        (&Method::Post, "/api/adblock/resume") => state.adblock.resume(),
+        (&Method::Post, "/api/adblock/update") => state.adblock.update(),
         (&Method::Get, "/api/doh/status") => doh_status(state),
         (&Method::Put, "/api/doh/config") => doh_config_set(state, body),
         (&Method::Post, "/api/doh/enable") => doh_enable(state),

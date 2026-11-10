@@ -134,7 +134,10 @@ pub(crate) fn parse_clcc(raw: &str) -> Vec<Value> {
         let stat_i: usize = parts[2].trim().parse().unwrap_or(0);
         let mode: i64 = parts[3].trim().parse().unwrap_or(0);
         let number = if parts.len() > 5 {
-            parts[5].trim().trim_matches('"').to_string()
+            // `"0418...",129` -> keep only the quoted number.
+            let raw = parts[5].trim();
+            let quoted = raw.split(',').next().unwrap_or(raw);
+            quoted.trim().trim_matches('"').to_string()
         } else {
             String::new()
         };
@@ -232,6 +235,9 @@ pub fn call_dial(state: &AppState, body: &[u8]) -> (u16, Value) {
         Ok(resp) if resp.contains("ERROR") => (500, json!({"ok": false, "error": "dial failed"})),
         Ok(_) => {
             state.call_active.store(true, Ordering::Relaxed);
+            if let Err(e) = state.voice_bridge.start() {
+                eprintln!("[call] audio bridge not started: {e}");
+            }
             (200, json!({"ok": true, "data": {"status": "ok"}}))
         }
         Err(e) => (503, json!({"ok": false, "error": e})),
@@ -256,14 +262,22 @@ pub fn call_answer(state: &AppState) -> (u16, Value) {
             // An answered call is active even if the app never polls call_status;
             // the modem policies must not touch the radio while it lasts.
             state.call_active.store(true, Ordering::Relaxed);
+            if let Err(e) = state.voice_bridge.start() {
+                eprintln!("[call] audio bridge not started: {e}");
+            }
             (200, json!({"ok": true, "data": {"status": "ok"}}))
         }
         Err(e) => (503, json!({"ok": false, "error": e})),
     }
 }
 
-/// GET /api/call/status
+/// Plain `AT+CLCC` snapshot; the HTTP route goes through `CallMonitor` instead.
+#[allow(dead_code)]
 pub fn call_status(state: &AppState) -> (u16, Value) {
+    state.last_status_poll.store(
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
+        Ordering::Relaxed,
+    );
     match at_cmd::send(&state.at_port, "AT+CLCC", 2) {
         Ok(resp) => {
             let calls = parse_clcc(&resp);

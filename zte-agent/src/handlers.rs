@@ -30,6 +30,22 @@ pub struct AppState {
     pub cache: Arc<UbusCache>,
     pub oos_policy: Arc<crate::oos_policy::OosPolicy>,
     pub conn_watchdog: Arc<crate::conn_watchdog::ConnWatchdog>,
+    /// Call-audio relay between the modem DSP and the phone app (see voice_bridge.rs).
+    pub voice_bridge: Arc<crate::voice_bridge::VoiceBridge>,
+    /// APNs pushes for new SMS and incoming calls (see push.rs).
+    pub push: Arc<crate::push::PushService>,
+    pub adblock: Arc<crate::adblock::AdBlock>,
+    /// MMS capture, download, storage and sending (see mms/).
+    pub mms: Arc<crate::mms::MmsService>,
+    /// Monthly data plan and usage alerts (see data_plan.rs).
+    pub data_plan: Arc<crate::data_plan::DataPlan>,
+    /// Remote access tunnel, router end (see tunnel.rs); `None` if its data dir is unusable.
+    pub tunnel: Option<Arc<openu60_tunnel::device::DeviceService>>,
+    /// Cached, waitable call list (see call_monitor.rs).
+    pub call_monitor: Arc<crate::call_monitor::CallMonitor>,
+    /// Unix seconds of the last /api/call/status request: while the app polls, the call
+    /// push would only duplicate what it already shows.
+    pub last_status_poll: std::sync::atomic::AtomicU64,
     /// A voice call is (believed to be) in progress; set by the telephony
     /// handlers, re-checked with `AT+CLCC` by the policies' busy guard.
     pub call_active: std::sync::atomic::AtomicBool,
@@ -57,6 +73,14 @@ impl AppState {
             cache: Arc::new(UbusCache::new()),
             oos_policy: Arc::new(crate::oos_policy::OosPolicy::new()),
             conn_watchdog: Arc::new(crate::conn_watchdog::ConnWatchdog::new()),
+            voice_bridge: Arc::new(crate::voice_bridge::VoiceBridge::new()),
+            push: Arc::new(crate::push::PushService::new()),
+            adblock: crate::adblock::AdBlock::new(),
+            mms: Arc::new(crate::mms::MmsService::new()),
+            data_plan: Arc::new(crate::data_plan::DataPlan::new()),
+            tunnel: crate::tunnel::new_service(),
+            call_monitor: Arc::new(crate::call_monitor::CallMonitor::new()),
+            last_status_poll: std::sync::atomic::AtomicU64::new(0),
             call_active: std::sync::atomic::AtomicBool::new(false),
             ussd_prompt_at: std::sync::atomic::AtomicU64::new(0),
         }

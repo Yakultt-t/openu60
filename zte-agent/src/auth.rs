@@ -11,6 +11,22 @@ pub struct AuthState {
     password_hash: Mutex<Option<String>>,
     /// Active bearer tokens mapped to expiry timestamps.
     tokens: Mutex<Vec<Token>>,
+    /// Token for programs on the router itself (the touchscreen UI). Random per start,
+    /// written to a root-only file in tmpfs and accepted only from loopback.
+    local_token: String,
+}
+
+/// Where the local token is published for on-device clients.
+pub const LOCAL_TOKEN_FILE: &str = "/tmp/openu60-local.token";
+
+fn random_hex(n: usize) -> String {
+    use std::io::Read;
+    let mut buf = vec![0u8; n];
+    if std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut buf)).is_err() {
+        let t = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        buf = Sha256::digest(format!("{t}-{}", std::process::id()).as_bytes())[..n.min(32)].to_vec();
+    }
+    hex::encode(buf)
 }
 
 struct Token {
@@ -25,7 +41,22 @@ impl AuthState {
         Self {
             password_hash: Mutex::new(None),
             tokens: Mutex::new(Vec::new()),
+            local_token: random_hex(24),
         }
+    }
+
+    /// Publishes the local token (mode 0600). Called once at startup.
+    pub fn publish_local_token(&self) {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let _ = std::fs::remove_file(LOCAL_TOKEN_FILE);
+        if let Ok(mut f) = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(LOCAL_TOKEN_FILE) {
+            let _ = f.write_all(self.local_token.as_bytes());
+        }
+    }
+
+    pub fn is_local_token(&self, token: &str) -> bool {
+        !token.is_empty() && token == self.local_token
     }
 
     /// Set the admin password (called once at startup from env or config).

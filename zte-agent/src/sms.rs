@@ -12,10 +12,26 @@ pub fn sms_list(_state: &AppState, body: &[u8]) -> (u16, Value) {
         Ok(v) => v,
         Err(_) => return (400, json!({"ok": false, "error": "invalid JSON"})),
     };
-    match ubus::call("zwrt_wms", "zte_libwms_get_sms_data", Some(&parsed.to_string())) {
-        Ok(data) => (200, json!({"ok": true, "data": data})),
-        Err(e) => (503, json!({"ok": false, "error": e})),
+    let mut data = match ubus::call("zwrt_wms", "zte_libwms_get_sms_data", Some(&parsed.to_string())) {
+        Ok(data) => data,
+        Err(e) => return (503, json!({"ok": false, "error": e})),
+    };
+    // STD firmware encrypts number/content with a session key; a browser login replaces
+    // that key, so one re-key + refetch covers the stale-key case.
+    if let Err(first) = crate::sms_crypto::decrypt_messages(&mut data) {
+        eprintln!("[sms] decrypt failed ({first}); re-keying");
+        if let Err(e) = crate::sms_crypto::rekey() {
+            return (503, json!({"ok": false, "error": format!("sms key: {e}")}));
+        }
+        data = match ubus::call("zwrt_wms", "zte_libwms_get_sms_data", Some(&parsed.to_string())) {
+            Ok(data) => data,
+            Err(e) => return (503, json!({"ok": false, "error": e})),
+        };
+        if let Err(e) = crate::sms_crypto::decrypt_messages(&mut data) {
+            return (503, json!({"ok": false, "error": format!("sms decrypt: {e}")}));
+        }
     }
+    (200, json!({"ok": true, "data": data}))
 }
 
 pub fn sms_capacity(_state: &AppState) -> (u16, Value) {
@@ -26,10 +42,37 @@ pub fn sms_capacity(_state: &AppState) -> (u16, Value) {
 }
 
 pub fn sms_send(_state: &AppState, body: &[u8]) -> (u16, Value) {
-    let parsed: Value = match serde_json::from_slice(body) {
+    let mut parsed: Value = match serde_json::from_slice(body) {
         Ok(v) => v,
         Err(_) => return (400, json!({"ok": false, "error": "invalid JSON"})),
     };
+    // The firmware rejects anything but digits and a leading "+" ("Invalid argument"); numbers
+    // picked from Contacts carry spaces, dashes, brackets and invisible direction marks.
+    // Several recipients are separated by ";".
+    if let Some(raw) = parsed["number"].as_str() {
+        let cleaned: Vec<String> = raw
+            .split([';', ','])
+            .map(|n| {
+                let n = n.trim();
+                let plus = n.starts_with('+') || n.starts_with('\u{ff0b}');
+                let digits: String = n.chars().filter(|c| c.is_ascii_digit()).collect();
+                if plus { format!("+{digits}") } else { digits }
+            })
+            .filter(|n| n.trim_start_matches('+').len() >= 3)
+            .collect();
+        if cleaned.is_empty() {
+            return (400, json!({"ok": false, "error": "invalid phone number"}));
+        }
+        parsed["number"] = Value::String(cleaned.join(";"));
+    }
+    // Always register a fresh key right before sending so the firmware decrypts with the
+    // key we encrypt with, even if a browser session changed it meanwhile.
+    if let Err(e) = crate::sms_crypto::rekey() {
+        return (503, json!({"ok": false, "error": format!("sms key: {e}")}));
+    }
+    if let Err(e) = crate::sms_crypto::encrypt_send_request(&mut parsed) {
+        return (503, json!({"ok": false, "error": format!("sms encrypt: {e}")}));
+    }
     match ubus::call("zwrt_wms", "zte_libwms_send_sms", Some(&parsed.to_string())) {
         Ok(data) => (200, json!({"ok": true, "data": data})),
         Err(e) => (503, json!({"ok": false, "error": e})),
