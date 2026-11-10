@@ -1,0 +1,44 @@
+name: U60Toolkit
+options:
+  bundleIdPrefix: io.github.openu60
+  deploymentTarget:
+    macOS: "15.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_HARDENED_RUNTIME: NO
+    ENABLE_APP_SANDBOX: NO
+targets:
+  U60Toolkit:
+    type: application
+    platform: macOS
+    sources:
+      - Sources
+      - path: Resources/payload
+        type: folder
+        buildPhase: resources
+    info:
+      path: Sources/Info.plist
+      properties:
+        CFBundleDisplayName: U60 刷机助手
+        CFBundleName: U60 刷机助手
+        CFBundleDevelopmentRegion: zh-Hans
+        CFBundleLocalizations: [zh-Hans]
+        CFBundleAllowMixedLocalizations: true
+        LSApplicationCategoryType: public.app-category.utilities
+        NSHumanReadableCopyright: OpenU60 · 与中兴通讯无关联
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+          NSAllowsLocalNetworking: true
+        NSLocalNetworkUsageDescription: 需要访问本地网络，登录 U60 Pro 的网页后台来打开 USB 调试。
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.openu60.u60toolkit
+        PRODUCT_NAME: U60 刷机助手
+        GENERATE_INFOPLIST_FILE: NO
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGN_STYLE: Manual
+        DEVELOPMENT_TEAM: ""
