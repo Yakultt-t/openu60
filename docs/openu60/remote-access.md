@@ -171,6 +171,17 @@ cargo run -p openu60-tunnel --example phone -- <device_id> <public_key> \
 - 让路由器用它：在启动脚本 `/data/local/tmp/start_zte_agent.sh` 里 `export ZTE_AGENT_PUSH_GATEWAY=https://push.example.com/v1/push` 后重启 agent（方法见 [router-runtime.md](router-runtime.md#守护进程zte-agent-runsh)），或者编译时在 `config.env` 里写 `export OPENU60_PUSH_GATEWAY=…`。设成 `off` 则关闭。
 - 只想给 Apple Watch 用（见下一节）而不需要推送时，可以不设 `PUSHGW_APNS_KEY` 等四个变量，网关只运行手表通道。
 
+## 路由器离线提醒（经网关）
+
+路由器离线时自己发不出通知，所以由推送网关代发：
+
+- 路由器每分钟向网关发一次签名的心跳（`POST /v1/heartbeat`，签名方式同上，标签 `openu60-link`），附带想要接收离线提醒的设备推送 token 和语言。
+- 网关 5 分钟收不到心跳，就给这些设备发"U60 已离线"；心跳恢复后再发"U60 已恢复在线"。
+- 网关只在内存里保存这些 token，重启后等路由器下一次心跳再重新获得。需要配置 APNs 密钥（`PUSHGW_APNS_KEY` 等）才能真正发出提醒。
+- 测试时可以设 `PUSHGW_OFFLINE_SECS=10` 缩短等待时间。
+
+其他设备提醒（电量低、没信号、VoLTE 掉线、Wi-Fi 上行断开、温度过高、充电完成、未接来电）由路由器自己发出，见 `zte-agent/src/device_alerts.rs`；每台设备在 App 里各自选择要接收哪些。
+
 ## Apple Watch 独立联网（经网关，端到端加密）
 
 watchOS 只允许普通 App 用 HTTP(S)，不能用手机那条 UDP 隧道。所以手表不在 iPhone 旁边（只有蜂窝或 Wi-Fi）时，走推送网关里的“手表通道”。

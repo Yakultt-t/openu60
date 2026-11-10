@@ -38,6 +38,7 @@ OpenU60 keeps a Chinese SIM card in a ZTE U60 Pro. An agent runs on the router, 
 - **Chinese SIM roaming fixes**: turns IMS (VoLTE) registration back on when the carrier's configuration switches it off, keeps the "SMS over IMS" flag in step, and adds public DNS while the carrier's DNS does not answer.
 - **Wi-Fi uplink**: in client mode the router joins your home Wi-Fi like a phone; in repeater mode one band joins the upstream network while the other keeps the hotspot. You can then turn off roaming data while SMS and calls still use the SIM. Comes back by itself after a reboot and retries when it gets stuck.
 - **Data plan alerts**: monthly allowance, billing day, alert thresholds and a daily cap.
+- **Notifications and router alerts**: pushes are set per device (incoming calls, missed calls, SMS, MMS); SMS can be limited to people in Contacts (verification codes still notify; the router only receives hashes of contact numbers). The router also warns about low battery, no service, VoLTE not registered, Wi-Fi uplink lost, overheating and charging finished; when the router has been offline for 5 minutes the push gateway sends that alert on its behalf.
 - **Ad blocking**: network-wide, through the router's own DNS, with statistics.
 - **Router management (upstream)**: signal and cells, band/cell locking, APNs, Wi-Fi (including a Wi-Fi 7 switch), firewall, DNS/DoH, USB, battery and charging, scheduled tasks, speed test, AT terminal, Mihomo, Tailscale and more, through an HTTP API and a web panel.
 
