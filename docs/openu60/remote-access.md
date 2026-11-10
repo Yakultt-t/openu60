@@ -23,7 +23,50 @@
 
 ## 自建中继
 
-中继是一个单文件、无状态的 UDP 服务（`relay/`，二进制名 `openu60-relay`），不需要数据库，也不需要预先登记设备，最小规格的 VPS 就够用。尽量选离路由器和手机都近的地方：在运营商级 NAT（CGNAT）后面经常打不通洞，这时所有流量都要经过中继，延迟就取决于中继的位置。
+中继是一个单文件、无状态的 UDP 服务（`relay/`，程序名 `openu60-relay`）：不需要数据库，不需要域名和证书，也不需要预先登记设备，最便宜的云服务器就够用。
+
+### 方法一：一条命令安装（推荐）
+
+1. **买一台云服务器**：1 核 CPU、1 GB 内存足够；系统选 Ubuntu 22.04/24.04 或 Debian 12（CentOS/Rocky/Alma/Fedora 也行），x86_64 或 ARM 都可以。地区尽量靠近路由器和你常在的地方：手机和路由器在运营商级 NAT（CGNAT）后面经常打不通洞，这时所有流量都经过中继，延迟取决于中继的位置。
+2. **用 root 登录服务器，运行**：
+
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/Yakultt-t/openu60/main/scripts/relay/install.sh | sudo bash
+   ```
+
+   脚本会：
+   1. 下载对应 CPU 的 `openu60-relay`（来自本仓库的 Releases，校验 SHA-256）；
+   2. 创建系统用户 `openu60`；
+   3. 安装开机自启、崩溃自动重启的 systemd 服务；
+   4. 在 ufw / firewalld / iptables 里放行 UDP 443；
+   5. 自检，最后打印要填到 App 里的地址。
+3. **在云服务商的控制台放行 UDP 443**：阿里云、腾讯云叫“安全组”，AWS/GCP/Azure/Oracle 叫 Security group / Firewall rules。很多服务商默认只开 22 端口，这一步漏了 App 里会显示“连不上”。
+4. **在 App 里添加**：
+   1. 打开 设置 → 设备与配对 → 转发服务器 → 右上角 “+”；
+   2. 填脚本打印的地址（IP 或域名，端口是 443 时可以不写）；
+   3. 点“测试连接”，看手机和路由器能不能连上；
+   4. 点“添加并立即使用”。
+
+常用选项（用 `bash -s --` 传给脚本）：
+
+```bash
+# 换端口（443 被占用时）
+curl -fsSL https://raw.githubusercontent.com/Yakultt-t/openu60/main/scripts/relay/install.sh | sudo bash -s -- --port 8443
+# 卸载
+curl -fsSL https://raw.githubusercontent.com/Yakultt-t/openu60/main/scripts/relay/install.sh | sudo bash -s -- --uninstall
+```
+
+要更新到最新版本，重新运行一次安装命令即可。
+
+**查看状态和日志**：
+- `systemctl status openu60-relay`
+- `journalctl -u openu60-relay -f`
+
+**检查中继是否在线**：在任何一台机器上运行 `openu60-relay --probe <地址>`，能连上时会打印往返时间。
+
+想用域名而不是 IP，就加一条 A 记录指向服务器。如果 DNS 托管在 Cloudflare，必须设成“仅 DNS”（灰色云朵），因为它的代理不转发 UDP。
+
+### 方法二：手动安装
 
 **1. 编译**
 
@@ -36,6 +79,10 @@ cargo zigbuild --release --target x86_64-unknown-linux-musl -p openu60-relay
 ```
 
 **2. 安装为 systemd 服务**
+
+把程序拷到服务器后，有两种装法：
+- 用同一个脚本安装这个本地文件：`sudo bash scripts/relay/install.sh --bin ./openu60-relay`；
+- 自己写 systemd 服务：
 
 ```bash
 sudo install -m 755 openu60-relay /usr/local/bin/openu60-relay
@@ -78,18 +125,27 @@ journalctl -u openu60-relay -f
 
 中继自己不做 TLS，也不需要证书。加密在手机和路由器之间端到端完成（自签证书加公钥 pinning），中继只转发它解不开的 QUIC 包和语音包，以及签过名的注册/介绍帧。
 
-## 让路由器和 app 用你的中继
+## 让路由器和 App 用你的中继
 
-app 不单独配置中继：它在配对时从路由器的 `/api/tunnel/info` 拿到中继列表，之后每次启动、登录后都会刷新一次，列表变了就自动重新配对。所以只要改路由器上的配置：
+**在 App 里切换**：
+1. 打开 设置 → 设备与配对 → 转发服务器。列表里有 App 内置的服务器和你添加的服务器，每台都显示从手机测得的延迟。
+2. 点一台服务器，选“改用这台服务器”。
+
+切换时，路由器会**先连上新服务器、确认注册成功，再断开旧的**。新服务器 8 秒内连不上，就保持原样并提示原因，所以填错地址不会让你在外面失联。切换后路由器只登记在选中的这一台上，其他服务器不会再经手你的流量。
+
+**用接口**（效果相同）：
 
 ```bash
 # api 函数见 install.md 第 5 节
-api PUT /api/tunnel/config '{"relays": ["relay.example.com:443"]}'
-api GET /api/tunnel/status | jq '.data.relays_status'     # registered 应为 true
+api POST /api/tunnel/probe '{"relay": "relay.example.com"}'          # 只测试，不改配置
+api PUT /api/tunnel/config '{"relays": ["relay.example.com:443"]}'   # 先试连，成功才切换
+api GET /api/tunnel/status | jq '.data.relays_status'                 # registered 应为 true
 ```
 
-- 路由器会向列表里的**每一个**中继注册；手机按列表顺序逐个尝试，第一个连得通的胜出，所以把离你最近的放在第一位。可以同时写多个，例如 `["hk.example.com:443", "relay.example.com:443"]`。
-- 配置保存在 `/data/openu60/tunnel/config.json`，`PUT` 后立即生效并重新注册。也可以用 `{"enabled": false}` 关闭中继访问。
+- **地址写法**：可以写成 `relay.example.com`、`1.2.3.4`、`host:8443` 或 `[IPv6]:443`，不写端口默认 443。
+- **多个中继**：可以同时写多个，路由器会向每一个注册，手机按列表顺序尝试，第一个连得通的胜出。
+- **其他参数**：`{"verify": false}` 跳过试连；`{"enabled": false}` 关闭中继访问。
+- **配置位置**：保存在 `/data/openu60/tunnel/config.json`。
 - 想让新装的路由器默认就用你的中继，就在 `${U60_HOME:-~/u60}/config.env` 里写 `export OPENU60_DEFAULT_RELAYS=relay.example.com:443`（多个用逗号分隔），再用 `06_build_agent.sh` 重新编译 agent。手机端的中继列表来自路由器，app 不用改。配对过手机的路由器已经把当时的中继列表写进了 `config.json`，仍需要用上面的 `PUT` 修改。
 
 **用命令行测试**（在 Mac 上模拟一部手机）：
@@ -113,6 +169,31 @@ cargo run -p openu60-tunnel --example phone -- <device_id> <public_key> \
 - 配置（环境变量）：`PUSHGW_LISTEN`（默认 `0.0.0.0:443`）、`PUSHGW_CERT` / `PUSHGW_KEY`（TLS 证书链和私钥，PEM，例如 Let's Encrypt 的）、`PUSHGW_APNS_KEY`（`.p8` 文件）、`PUSHGW_KEY_ID`、`PUSHGW_TEAM_ID`、`PUSHGW_BUNDLE_ID`。`.p8` 必须属于 App 所在的开发者团队，`PUSHGW_BUNDLE_ID` 要和 App 一致，所以只有自己构建 App 的人才需要它。
 - 和中继可以放在同一台机器上：中继用 UDP，网关用 TCP（HTTPS），端口不冲突。健康检查：`curl https://push.example.com/healthz`。
 - 让路由器用它：在启动脚本 `/data/local/tmp/start_zte_agent.sh` 里 `export ZTE_AGENT_PUSH_GATEWAY=https://push.example.com/v1/push` 后重启 agent（方法见 [router-runtime.md](router-runtime.md#守护进程zte-agent-runsh)），或者编译时在 `config.env` 里写 `export OPENU60_PUSH_GATEWAY=…`。设成 `off` 则关闭。
+- 只想给 Apple Watch 用（见下一节）而不需要推送时，可以不设 `PUSHGW_APNS_KEY` 等四个变量，网关只运行手表通道。
+
+## Apple Watch 独立联网（经网关，端到端加密）
+
+watchOS 只允许普通 App 用 HTTP(S)，不能用手机那条 UDP 隧道。所以手表不在 iPhone 旁边（只有蜂窝或 Wi-Fi）时，走推送网关里的“手表通道”。
+
+**流程**：
+- 路由器一直以长轮询的方式连着网关：`POST /v1/link/poll`，签名方式和推送相同，标签是 `openu60-link`。
+- 手表把请求发到 `POST /v1/link/send/<路由器 ID>`。网关把它交给路由器，再把路由器的回复交还给手表。
+- 路由器 60 多秒没来取，手表的请求会立即得到“路由器离线”。
+
+**加密**：
+- 每个请求和回复都用 ChaCha20-Poly1305 加密，密钥是路由器生成的 32 字节手表密钥。
+- 手机通过 `POST /api/watch/link` 取到这把密钥，再经苹果的手表通道交给手表，保存在手表的钥匙串里。
+- 网关只能看到路由器 ID 和数据大小，看不到内容。
+- 请求带时间戳和随机 ID，路由器会拒绝过期或重放的请求。
+
+**手表能做什么**：路由器只执行白名单里的请求（`zte-agent/src/watch_link.rs` 的 `ALLOWED`）：
+- 查看状态（`GET /api/watch/status`）
+- 收发和标记短信
+- 查看未接来电
+
+不能改设置。打电话需要 iPhone 在旁边，因为通话声音由 iPhone 传送。
+
+**收回手表的访问权限**：`POST /api/watch/link/revoke` 删除密钥。手机下次连上路由器时会重新生成一把。
 
 ## 安全与隐私
 

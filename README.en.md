@@ -45,6 +45,10 @@ OpenU60 keeps a Chinese SIM card in a ZTE U60 Pro. An agent runs on the router, 
 
 A screen program of our own that you can switch to and from the stock UI: a lock screen with clock and live speeds, network status (signal, data usage, connected devices, battery, remote link), internet mode switching (SIM hotspot / Wi-Fi repeater / Wi-Fi client, picking a nearby network on screen), charging settings (charge limit, reverse charging), ad-blocking switch and statistics, a Wi-Fi QR code for connecting a phone, an incoming-call card, and settings for appearance, brightness and screen lock.
 
+![Router touchscreen UI: lock screen, network status, internet mode, charging, ad blocking, pairing, settings, appearance, incoming call](docs/images/screen/overview.png)
+
+<sub>Rendered with sample data by the screen program's own preview tool `screen-preview`; identical to what the device shows (320×480, scaled 2×).</sub>
+
 **U60 Toolkit (`desktop/U60Toolkit/`, macOS)**
 
 A graphical installer with four steps in order: enable USB debugging → back up → install → pair a phone. It can also uninstall. Its interface is in Chinese; the labels are translated below.
@@ -217,8 +221,14 @@ Once connected you can switch off cellular data under Mobile Network in the web 
 
 ### Remote access from outside
 
-1. Deploy the relay `openu60-relay` on a server with a public IP (one systemd unit; see [Remote access and relay](docs/openu60/remote-access.md#自建中继)).
-2. Point the router at it: `PUT /api/tunnel/config {"relays": ["relay.example.com:443"]}`.
+1. **Rent a cloud server** (1 CPU and 1 GB are plenty; Ubuntu, Debian or another Linux; x86_64 or ARM) and run this one command as root:
+
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/Yakultt-t/openu60/main/scripts/relay/install.sh | sudo bash
+   ```
+
+   It installs the relay `openu60-relay`, starts it at boot, opens UDP port 443 and finally prints the address to add. If your cloud provider has its own firewall ("security group"), allow **UDP 443** there too. To remove it, append `-s -- --uninstall`; other options (another port, manual install) are in [Remote access and relay](docs/openu60/remote-access.md#自建中继) (Chinese).
+2. **Add the server in the app**: Settings → 设备与配对 (Devices & pairing) → 转发服务器 (Relay servers) → "+", enter the address from step 1 and tap "Add and use now". The router tries the new server first and keeps the current one if it cannot connect, so you never lose access. Without the app: `PUT /api/tunnel/config {"relays": ["your-address:443"]}`.
 3. Log in once from the phone on the local network to pair; after that it connects from anywhere.
 
 ## Update, uninstall and recovery

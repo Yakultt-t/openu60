@@ -43,6 +43,10 @@ OpenU60 让中国手机卡常驻在中兴 U60 Pro 里。路由器上运行一个
 
 一个自己写的屏幕程序，可以和原厂界面来回切换：锁屏时钟和实时网速、网络状态（信号、流量、已连接设备、电池、远程连接）、上网方式切换（SIM 热点 / Wi-Fi 中继 / Wi-Fi 客户端，可直接选附近的 Wi-Fi）、充电设置（充电上限、反向充电）、广告拦截开关和统计、连接手机用的 Wi-Fi 二维码、来电卡片，以及外观、亮度、锁屏等设置。
 
+![路由器触摸屏界面：锁屏、网络状态、上网方式、充电、广告拦截、连接与配对、设置、外观、来电](docs/images/screen/overview.png)
+
+<sub>截图由屏幕程序自带的预览工具 `screen-preview` 用示例数据渲染，和真机显示一致（320×480，放大 2 倍）。</sub>
+
 **U60 刷机助手（`desktop/U60Toolkit/`，macOS）**
 
 图形界面，按顺序点四步：开启 USB 调试 → 备份 → 安装 → 用手机配对。也能卸载。
@@ -215,8 +219,14 @@ adb shell "sed -n \"s/^export ZTE_AGENT_PASSWORD='\(.*\)'$/\1/p\" /data/local/tm
 
 ### 在外面远程访问
 
-1. 在一台有公网 IP 的服务器上部署中继 `openu60-relay`（一条 systemd 命令，见[远程访问与中继](docs/openu60/remote-access.md#自建中继)）。
-2. 告诉路由器用你的中继：`PUT /api/tunnel/config {"relays": ["relay.example.com:443"]}`。
+1. **买一台云服务器**（1 核 1 GB 就够，Ubuntu/Debian 等 Linux，x86_64 或 ARM 都行），用 root 运行这一条命令：
+
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/Yakultt-t/openu60/main/scripts/relay/install.sh | sudo bash
+   ```
+
+   脚本会装好转发服务 `openu60-relay`、设成开机自启、打开 UDP 443 端口，并在最后显示要填的地址。如果云服务商有自己的防火墙（安全组），记得在控制台里也放行 **UDP 443**。卸载时在命令后加 `-s -- --uninstall`；其他选项（换端口、手动安装）见[远程访问与中继](docs/openu60/remote-access.md#自建中继)。
+2. **在 App 里添加这台服务器**：设置 → 设备与配对 → 转发服务器 → “+”，填上一步显示的地址，点“添加并立即使用”。路由器会先试连新服务器，连不上就保持原样，不会失联。不用 App 的话，可以调接口：`PUT /api/tunnel/config {"relays": ["你的地址:443"]}`。
 3. 手机在局域网里登录一次完成配对，之后在外面也能连上。
 
 ## 更新、卸载和救砖
