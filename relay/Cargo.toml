@@ -1,0 +1,11 @@
+[package]
+name = "openu60-relay"
+version = "0.1.0"
+edition = "2021"
+description = "Rendezvous and blind UDP relay for OpenU60 tunnels"
+
+[dependencies]
+openu60-tunnel = { path = "../tunnel" }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "macros", "signal"] }
+log = "0.4"
+rand = "0.8"

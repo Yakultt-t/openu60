@@ -1,0 +1,33 @@
+[package]
+name = "openu60-tunnel"
+version = "0.1.0"
+edition = "2021"
+description = "End-to-end encrypted QUIC tunnel between the OpenU60 app and the router, with NAT hole punching and a blind relay fallback"
+
+[features]
+default = []
+mdns = ["dep:mdns-sd", "dep:if-addrs"]
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros"] }
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring", "log"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging"] }
+rustls-pki-types = "1"
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
+ring = "0.17"
+x509-cert = "0.2"
+der = "0.7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+rand = "0.8"
+bytes = "1"
+hex = "0.4"
+mdns-sd = { version = "0.21", optional = true }
+if-addrs = { version = "0.15", optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
