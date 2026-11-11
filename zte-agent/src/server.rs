@@ -567,9 +567,17 @@ pub fn route(method: &Method, path: &str, state: &AppState, body: &[u8]) -> (u16
         },
         (&Method::Post, "/api/call/audio/stop") => (200, json!({"ok": true, "data": state.voice_bridge.stop()})),
         (&Method::Get, "/api/call/audio/status") => (200, json!({"ok": true, "data": state.voice_bridge.status()})),
+        (&Method::Get, "/api/call/audio/settings") => (200, json!({"ok": true, "data": state.voice_bridge.settings()})),
         (&Method::Put, "/api/call/audio/settings") => {
             let parsed: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
-            match state.voice_bridge.set_mic_mode(parsed["mic_mode"].as_str().unwrap_or("")) {
+            let mut result = Ok(state.voice_bridge.settings());
+            if let Some(mode) = parsed["mic_mode"].as_str() {
+                result = state.voice_bridge.set_mic_mode(mode);
+            }
+            if let (Ok(_), Some(on)) = (&result, parsed["vonr_experimental"].as_bool()) {
+                result = state.voice_bridge.set_vonr(on);
+            }
+            match result {
                 Ok(v) => (200, json!({"ok": true, "data": v})),
                 Err(e) => (400, json!({"ok": false, "error": e})),
             }

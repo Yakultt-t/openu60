@@ -303,7 +303,7 @@ pub fn set(body: &[u8]) -> (u16, Value) {
 }
 
 fn set_clock(unix: f64) -> Result<(), String> {
-    let ts = libc::timespec { tv_sec: unix.trunc() as libc::time_t, tv_nsec: (unix.fract() * 1e9) as libc::c_long };
+    let ts = libc::timespec { tv_sec: unix.trunc() as _, tv_nsec: (unix.fract() * 1e9) as libc::c_long };
     // SAFETY: a plain clock_settime with a valid timespec.
     let r = unsafe { libc::clock_settime(libc::CLOCK_REALTIME, &ts) };
     if r == 0 { Ok(()) } else { Err(format!("clock_settime: {}", std::io::Error::last_os_error())) }

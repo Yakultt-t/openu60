@@ -98,8 +98,50 @@ const ULAW_SILENCE: u8 = 0xFF;
 /// A different phone endpoint may take the session over after the current one is quiet this long.
 const OWNER_TAKEOVER: Duration = Duration::from_millis(2500);
 
-/// Persisted choice of how the modem's voice graph is opened (see `MicMode`).
+/// Persisted voice settings: `mic_mode` (see `MicMode`), `vonr_experimental`, and `nr_vsid`
+/// (the voice graph id that carried a VoNR call, learned by the experimental switch).
 const SETTINGS_PATH: &str = "/data/openu60/voice.json";
+
+/// Voice graph ids tried, in order, when a call on 5G SA (VoNR) gives no audio. The default
+/// multimode id normally covers every network type; the others are Qualcomm's VoLTE and
+/// second-multimode ids.
+const VONR_CANDIDATES: [&str; 2] = ["10C02000", "11DC5000"];
+
+fn read_settings() -> Value {
+    std::fs::read_to_string(SETTINGS_PATH)
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .filter(|v| v.is_object())
+        .unwrap_or_else(|| json!({}))
+}
+
+/// Merges fields into voice.json so each setting keeps the others.
+fn write_settings(update: Value) -> Result<Value, String> {
+    let mut v = read_settings();
+    if let (Some(obj), Some(upd)) = (v.as_object_mut(), update.as_object()) {
+        for (k, val) in upd {
+            obj.insert(k.clone(), val.clone());
+        }
+    }
+    let _ = std::fs::create_dir_all("/data/openu60");
+    std::fs::write(SETTINGS_PATH, v.to_string()).map_err(|e| format!("save: {e}"))?;
+    Ok(v)
+}
+
+/// "SA" (5G standalone: a call here is VoNR), "LTE", "NSA" or "" from the modem's network info.
+fn current_rat() -> &'static str {
+    let Ok(v) = crate::ubus::call("zte_nwinfo_api", "nwinfo_get_netinfo", Some("{}")) else { return "" };
+    let t = v["network_type"].as_str().unwrap_or("").to_ascii_uppercase();
+    if t.contains("NSA") || t.contains("ENDC") {
+        "NSA"
+    } else if t.contains("SA") || t.starts_with("NR") || t == "5G" {
+        "SA"
+    } else if t.contains("LTE") || t == "4G" {
+        "LTE"
+    } else {
+        ""
+    }
+}
 
 /// The ODU tool opens a PAL device pair; by default that includes the router's own
 /// microphone, which the far end then hears on top of the phone's audio. `MuteTx` starts it
@@ -136,6 +178,10 @@ struct OduLaunch {
     vsid: String,
     devices: String,
     mute_tx: bool,
+    /// Experimental VoNR support: report VoNR/VoLTE and try other voice graph ids when a
+    /// 5G SA call gives no audio.
+    vonr: bool,
+    nr_vsid: Option<String>,
 }
 
 pub struct VoiceBridge {
@@ -145,6 +191,7 @@ pub struct VoiceBridge {
     vsid: String,
     devices: String,
     mic_mode: Mutex<MicMode>,
+    vonr: AtomicBool,
 }
 
 struct Session {
@@ -158,6 +205,8 @@ struct Session {
     odu_running: AtomicBool,
     odu_starts: AtomicU64,
     call_state: Mutex<String>,
+    /// "VoNR" or "VoLTE" while a call is up (experimental switch on), else "".
+    voice_rat: Mutex<String>,
     rx_phone: AtomicU64,
     tx_phone: AtomicU64,
     rx_dsp: AtomicU64,
@@ -187,11 +236,9 @@ struct Uplink {
 impl VoiceBridge {
     pub fn new() -> Self {
         let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
-        let mic_mode = std::fs::read_to_string(SETTINGS_PATH)
-            .ok()
-            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-            .and_then(|v| v["mic_mode"].as_str().and_then(MicMode::parse))
-            .unwrap_or(MicMode::Default);
+        let saved = read_settings();
+        let mic_mode = saved["mic_mode"].as_str().and_then(MicMode::parse).unwrap_or(MicMode::Default);
+        let vonr = saved["vonr_experimental"].as_bool().unwrap_or(false);
         Self {
             session: Mutex::new(None),
             at_port: Arc::new(AtPort::new()),
@@ -201,7 +248,25 @@ impl VoiceBridge {
             vsid: env("ZTE_VOICE_VSID").unwrap_or_else(|| DEFAULT_VSID.to_string()),
             devices: env("ZTE_VOICE_DEVICES").unwrap_or_else(|| DEFAULT_DEVICES.to_string()),
             mic_mode: Mutex::new(mic_mode),
+            vonr: AtomicBool::new(vonr),
         }
+    }
+
+    /// GET /api/call/audio/settings
+    pub fn settings(&self) -> Value {
+        let saved = read_settings();
+        json!({
+            "mic_mode": self.mic_mode(),
+            "vonr_experimental": self.vonr.load(Ordering::Relaxed),
+            "nr_vsid": saved["nr_vsid"].as_str(),
+        })
+    }
+
+    /// Experimental VoNR support on/off; takes effect on the next call.
+    pub fn set_vonr(&self, on: bool) -> Result<Value, String> {
+        self.vonr.store(on, Ordering::Relaxed);
+        write_settings(json!({"vonr_experimental": on}))?;
+        Ok(self.settings())
     }
 
     pub fn mic_mode(&self) -> &'static str {
@@ -212,10 +277,8 @@ impl VoiceBridge {
     pub fn set_mic_mode(&self, mode: &str) -> Result<Value, String> {
         let parsed = MicMode::parse(mode).ok_or("mic_mode must be default, mute_tx or no_mic")?;
         *self.mic_mode.lock().unwrap() = parsed;
-        let _ = std::fs::create_dir_all("/data/openu60");
-        std::fs::write(SETTINGS_PATH, json!({"mic_mode": parsed.as_str()}).to_string())
-            .map_err(|e| format!("save: {e}"))?;
-        Ok(json!({"mic_mode": parsed.as_str()}))
+        write_settings(json!({"mic_mode": parsed.as_str()}))?;
+        Ok(self.settings())
     }
 
     fn launch(&self) -> OduLaunch {
@@ -224,6 +287,8 @@ impl VoiceBridge {
             vsid: self.vsid.clone(),
             devices: if mode == MicMode::NoMic { "2".to_string() } else { self.devices.clone() },
             mute_tx: mode == MicMode::MuteTx,
+            vonr: self.vonr.load(Ordering::Relaxed),
+            nr_vsid: read_settings()["nr_vsid"].as_str().map(str::to_string),
         }
     }
 
@@ -257,6 +322,7 @@ impl VoiceBridge {
             odu_running: AtomicBool::new(false),
             odu_starts: AtomicU64::new(0),
             call_state: Mutex::new("unknown".to_string()),
+            voice_rat: Mutex::new(String::new()),
             rx_phone: AtomicU64::new(0),
             tx_phone: AtomicU64::new(0),
             rx_dsp: AtomicU64::new(0),
@@ -314,6 +380,7 @@ impl VoiceBridge {
                 v["active"] = json!(true);
                 v["uptime_s"] = json!(s.started.elapsed().as_secs());
                 v["call_state"] = json!(*s.call_state.lock().unwrap());
+                v["voice_rat"] = json!(*s.voice_rat.lock().unwrap());
                 v["odu_running"] = json!(s.odu_running.load(Ordering::Relaxed));
                 v["odu_starts"] = json!(s.odu_starts.load(Ordering::Relaxed));
                 v["phone"] = json!(phone);
@@ -576,7 +643,19 @@ impl Session {
     /// Owns the ODU process: starts it once the call is active, restarts it if it dies
     /// during the call, kills it when the call is gone, ends the session when idle. While an
     /// outgoing call rings it tries the tool for early media (see the module docs).
-    fn monitor(&self, at_port: Arc<AtPort>, launch: OduLaunch) {
+    fn monitor(&self, at_port: Arc<AtPort>, mut launch: OduLaunch) {
+        let base_vsid = launch.vsid.clone();
+        // Voice graph ids for a call on 5G SA: the one learned last time, then the default,
+        // then the other candidates (experimental VoNR switch only).
+        let mut nr_cands: Vec<String> = Vec::new();
+        for v in launch.nr_vsid.iter().cloned().chain(std::iter::once(base_vsid.clone())).chain(VONR_CANDIDATES.iter().map(|s| s.to_string())) {
+            if !nr_cands.contains(&v) {
+                nr_cands.push(v);
+            }
+        }
+        let mut nr_idx: usize = 0;
+        let mut on_sa = false;
+        let mut rat_checked: Option<Instant> = None;
         let mut child: Option<Child> = None;
         let mut idle_since: Option<Instant> = None;
         let mut last_spawn: Option<Instant> = None;
@@ -642,6 +721,9 @@ impl Session {
                 spawns_this_call = 0;
                 active_since = None;
                 attached = false;
+                nr_idx = 0;
+                rat_checked = None;
+                self.voice_rat.lock().unwrap().clear();
                 early_child = false;
                 early_tries = 0;
                 dialing_since = None;
@@ -657,6 +739,19 @@ impl Session {
                     active_since.get_or_insert_with(Instant::now);
                 } else if state != "held" {
                     active_since = None;
+                }
+                // Experimental: which network carries the call (VoNR on 5G SA; VoLTE on 4G,
+                // including EPS fallback), checked every 5 s.
+                if launch.vonr && voice_calls > 0 && rat_checked.map(|t| t.elapsed() >= Duration::from_secs(5)).unwrap_or(true) {
+                    rat_checked = Some(Instant::now());
+                    let rat = current_rat();
+                    on_sa = rat == "SA";
+                    let label = match rat { "SA" => "VoNR", "LTE" | "NSA" => "VoLTE", _ => "" };
+                    let mut cur = self.voice_rat.lock().unwrap();
+                    if *cur != label {
+                        eprintln!("[voice] call network: {} ({rat})", if label.is_empty() { "?" } else { label });
+                        *cur = label.to_string();
+                    }
                 }
                 if state == "dialing" {
                     dialing_since.get_or_insert_with(Instant::now);
@@ -682,6 +777,12 @@ impl Session {
                         attached = true;
                         let phase = if early_child { " while ringing (early media)" } else { "" };
                         eprintln!("[voice] dsp audio flowing {} ms after start{phase}", spawned.elapsed().as_millis());
+                        // Remember the id that carried a VoNR call for the next one.
+                        if launch.vonr && on_sa && !early_child && launch.nr_vsid.as_deref() != Some(launch.vsid.as_str()) {
+                            eprintln!("[voice] VoNR audio with vsid {}; remembered", launch.vsid);
+                            let _ = write_settings(json!({"nr_vsid": launch.vsid}));
+                            launch.nr_vsid = Some(launch.vsid.clone());
+                        }
                     } else if !attached && early_child && spawned.elapsed() > ATTACH_TIMEOUT {
                         eprintln!(
                             "[voice] no dsp audio {} ms after a start while ringing; {}",
@@ -695,6 +796,10 @@ impl Session {
                         early_child = false;
                     } else if !attached && spawned.elapsed() > ATTACH_TIMEOUT && spawns_this_call < 4 {
                         eprintln!("[voice] no dsp audio {} ms after start, restarting odu", spawned.elapsed().as_millis());
+                        if launch.vonr && on_sa {
+                            nr_idx += 1;
+                            eprintln!("[voice] VoNR: no audio with vsid {}, next {}", launch.vsid, nr_cands[nr_idx % nr_cands.len()]);
+                        }
                         if let Some(c) = child.take() {
                             stop_child(c);
                         }
@@ -705,6 +810,7 @@ impl Session {
                 let settled = active_since.map(|t| t.elapsed() >= START_DELAY).unwrap_or(false);
                 let backoff_ok = last_spawn.map(|t| t.elapsed() > Duration::from_millis(1500)).unwrap_or(true);
                 if state == "active" && settled && child.is_none() && backoff_ok && spawns_this_call < 4 {
+                    launch.vsid = if launch.vonr && on_sa { nr_cands[nr_idx % nr_cands.len()].clone() } else { base_vsid.clone() };
                     match spawn_odu(&launch) {
                         Ok(c) => {
                             eprintln!("[voice] odu started (pid {}) for active call (attempt {})", c.id(), spawns_this_call + 1);
