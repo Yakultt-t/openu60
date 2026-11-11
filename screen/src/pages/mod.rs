@@ -39,6 +39,12 @@ pub enum Action {
     PowerOff,
     AdblockUpdate,
     DismissMissed,
+    /// Automatic time zone on/off.
+    TzAuto(bool),
+    /// Manual time zone: move the offset by this many minutes.
+    TzStep(i32),
+    TimeAutoToggle,
+    SyncNow,
 }
 
 pub type Hits = Vec<(Action, [f32; 4])>;
@@ -49,6 +55,7 @@ pub enum Sub {
     Appearance,
     Display,
     Advanced,
+    Time,
 }
 
 /// "‹ 设置" back link at the top left of a sub-page.

@@ -1,7 +1,10 @@
-//! Fills `Status` from zte-agent over loopback (local token in /tmp) plus /proc for the live
-//! throughput, so speeds are right whichever uplink (cellular or Wi-Fi repeater) is in use.
+//! Fills `Status` from zte-agent over loopback (local token in /tmp). Live throughput and the
+//! clock run on their own one-second ticker, so a slow agent call never freezes the speed.
+//! On mobile data the speed comes from the modem (`zwrt_data get_wwandst`), which counts the
+//! traffic the IPA hardware forwards past the kernel; /proc/net/dev would miss it and lag a
+//! speed test. On a Wi-Fi uplink it is that interface's kernel counters.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -15,6 +18,13 @@ const HISTORY: usize = 60;
 
 /// Set by actions: poll everything on the next tick instead of waiting.
 pub static REFRESH: AtomicBool = AtomicBool::new(false);
+/// Screen on: only then is the modem asked for its rate every second.
+pub static AWAKE: AtomicBool = AtomicBool::new(true);
+/// Minutes from UTC to show the clock in; NO_TZ until known.
+static TZ_MIN: AtomicI32 = AtomicI32::new(NO_TZ);
+const NO_TZ: i32 = i32::MIN;
+/// Interface of the Wi-Fi uplink when it carries the traffic; empty on mobile data.
+static WAN_DEV: Mutex<String> = Mutex::new(String::new());
 
 pub struct Api {
     agent: ureq::Agent,
@@ -91,10 +101,10 @@ fn counters(pred: impl Fn(&str) -> bool) -> (u64, u64) {
     (rx, tx)
 }
 
-/// Local time from the network's NITZ offset (the system clock runs UTC).
-fn local_time(offset_hours: f64) -> (u32, u32, u32, u32, u32) {
+/// Local time at an offset from UTC (the system clock runs UTC).
+fn local_time(offset_min: i32) -> (u32, u32, u32, u32, u32) {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
-    let t = now + (offset_hours * 3600.0) as i64;
+    let t = now + offset_min as i64 * 60;
     let days = t.div_euclid(86_400);
     let secs = t.rem_euclid(86_400);
     let weekday = ((days + 4).rem_euclid(7)) as u32; // 1970-01-01 was a Thursday
@@ -110,7 +120,73 @@ fn local_time(offset_hours: f64) -> (u32, u32, u32, u32, u32) {
     ((secs / 3600) as u32, ((secs % 3600) / 60) as u32, month, day, weekday)
 }
 
+/// The modem's own rate for the data bearer, in bits per second (down, up).
+fn modem_rate() -> Option<(f64, f64)> {
+    let out = std::process::Command::new("ubus")
+        .args(["call", "zwrt_data", "get_wwandst", r#"{"cid":1,"type":1}"#])
+        .output()
+        .ok()?;
+    let v: Value = serde_json::from_slice(&out.stdout).ok()?;
+    Some((num(&v["real_rx_speed"])? * 8.0, num(&v["real_tx_speed"])? * 8.0))
+}
+
+/// One-second ticker: throughput and the clock, independent of the agent polls.
+fn ticker(status: Arc<Mutex<Status>>) {
+    let mut last: Option<(Instant, String, u64, u64)> = None;
+    let mut next = Instant::now();
+    loop {
+        let dev = WAN_DEV.lock().unwrap().clone();
+        let now = Instant::now();
+        let (rx, tx) = if dev.is_empty() { counters(|n| n.starts_with("rmnet_data")) } else { counters(|n| n == dev) };
+        let mut rate = None;
+        if let Some((t0, dev0, rx0, tx0)) = &last {
+            if *dev0 == dev {
+                let dt = now.duration_since(*t0).as_secs_f64().max(0.2);
+                rate = Some((rx.saturating_sub(*rx0) as f64 * 8.0 / dt, tx.saturating_sub(*tx0) as f64 * 8.0 / dt));
+            }
+        }
+        last = Some((now, dev.clone(), rx, tx));
+        if dev.is_empty() && AWAKE.load(Ordering::Relaxed) {
+            rate = modem_rate().or(rate);
+        }
+        let (down, up) = rate.unwrap_or((0.0, 0.0));
+
+        let tz = TZ_MIN.load(Ordering::Relaxed);
+        let tz = if tz == NO_TZ { 0 } else { tz };
+        let (h, m, mo, d, wd) = local_time(tz);
+        {
+            let mut s = status.lock().unwrap();
+            s.hour = h;
+            s.minute = m;
+            s.month = mo;
+            s.day = d;
+            s.weekday = wd;
+            s.tz_hours = tz as f64 / 60.0;
+            s.down_bps = down;
+            s.up_bps = up;
+            s.down_hist.push(down as f32);
+            s.up_hist.push(up as f32);
+            if s.down_hist.len() > HISTORY {
+                s.down_hist.remove(0);
+                s.up_hist.remove(0);
+            }
+        }
+        next += Duration::from_secs(1);
+        let now = Instant::now();
+        if next > now {
+            std::thread::sleep(next - now);
+        } else {
+            next = now; // fell behind (suspend, slow fork): start a fresh cadence
+        }
+    }
+}
+
 pub fn spawn(status: Arc<Mutex<Status>>) {
+    let st = status.clone();
+    std::thread::Builder::new()
+        .name("screen-ticker".into())
+        .spawn(move || ticker(st))
+        .expect("ticker thread");
     std::thread::Builder::new()
         .name("screen-data".into())
         .spawn(move || run(status))
@@ -119,22 +195,11 @@ pub fn spawn(status: Arc<Mutex<Status>>) {
 
 fn run(status: Arc<Mutex<Status>>) {
     let mut api = Api::with_timeout(Duration::from_secs(4));
-    let mut tz = 0.0f64;
-    let mut wan_dev = String::new();
-    let mut last: Option<(Instant, u64, u64)> = None;
+    // The agent's time setting; until it answers (or on an agent without it), NITZ.
+    let mut agent_clock = false;
     let mut tick: u64 = 0;
     loop {
         let started = Instant::now();
-        // Throughput every second.
-        let (rx, tx) = if wan_dev.is_empty() { counters(|n| n.starts_with("rmnet_data")) } else { counters(|n| n == wan_dev) };
-        let now = Instant::now();
-        let (mut down, mut up) = (0.0, 0.0);
-        if let Some((t0, rx0, tx0)) = last {
-            let dt = now.duration_since(t0).as_secs_f64().max(0.2);
-            down = rx.saturating_sub(rx0) as f64 * 8.0 / dt;
-            up = tx.saturating_sub(tx0) as f64 * 8.0 / dt;
-        }
-        last = Some((now, rx, tx));
 
         // Everything else every 5 s (signal) or 15 s (slow-moving values); an action asks for
         // an immediate full refresh.
@@ -181,7 +246,9 @@ fn run(status: Arc<Mutex<Status>>) {
         if tick % 5 == 0 {
             if let Some(sig) = api.get("/api/network/signal") {
                 if let Some(h) = num(&sig["nitz_timezone"]) {
-                    tz = h;
+                    if !agent_clock {
+                        TZ_MIN.store((h * 60.0).round() as i32, Ordering::Relaxed);
+                    }
                 }
                 update.push(Box::new(move |s: &mut Status| {
                     s.carrier = sig["network_provider"].as_str().unwrap_or("").to_string();
@@ -295,7 +362,7 @@ fn run(status: Arc<Mutex<Status>>) {
                     ("repeater", true, false) => "client".to_string(),
                     _ => saved,
                 };
-                wan_dev = if connected { w["device"].as_str().unwrap_or("").to_string() } else { String::new() };
+                *WAN_DEV.lock().unwrap() = if connected { w["device"].as_str().unwrap_or("").to_string() } else { String::new() };
                 let sig = w["station"]["signal"].as_i64().unwrap_or(0) as i32;
                 let freq = w["station"]["freq"].as_u64().unwrap_or(0) as u32;
                 let sta = w["station"]["sta_ssid"].as_str().unwrap_or("").to_string();
@@ -357,23 +424,30 @@ fn run(status: Arc<Mutex<Status>>) {
             }
         }
 
-        let (h, m, mo, d, wd) = local_time(tz);
+        // Time zone setting: once a minute, and right after a change from this screen.
+        if tick % 60 == 0 {
+            if let Some(t) = api.get("/api/system/time") {
+                if let Some(off) = t["offset_minutes"].as_i64() {
+                    agent_clock = true;
+                    TZ_MIN.store(off as i32, Ordering::Relaxed);
+                }
+                update.push(Box::new(move |s: &mut Status| {
+                    s.clock = crate::model::ClockInfo {
+                        loaded: true,
+                        offset_min: t["offset_minutes"].as_i64().unwrap_or(0) as i32,
+                        source: t["source"].as_str().unwrap_or("").to_string(),
+                        zone: t["zone"].as_str().unwrap_or("").to_string(),
+                        manual: t["tz_mode"].as_str() == Some("manual"),
+                        time_auto: t["time_auto"].as_bool().unwrap_or(true),
+                        last_sync: t["last_sync"].as_u64().unwrap_or(0),
+                        sync_error: t["last_sync_error"].as_str().unwrap_or("").to_string(),
+                    };
+                }));
+            }
+        }
+
         {
             let mut s = status.lock().unwrap();
-            s.hour = h;
-            s.minute = m;
-            s.month = mo;
-            s.day = d;
-            s.weekday = wd;
-            s.tz_hours = tz;
-            s.down_bps = down;
-            s.up_bps = up;
-            s.down_hist.push(down as f32);
-            s.up_hist.push(up as f32);
-            if s.down_hist.len() > HISTORY {
-                s.down_hist.remove(0);
-                s.up_hist.remove(0);
-            }
             let any = !update.is_empty();
             for f in update {
                 f(&mut s);

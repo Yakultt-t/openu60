@@ -86,3 +86,18 @@ body {
 .animate-shake {
   animation: shake 0.45s ease-in-out;
 }
+
+/* Native form controls follow the page theme. Without this, Chrome on Windows draws a
+   <select>'s option list white while the options inherit the dark theme's light text,
+   so the list is unreadable (white on white). */
+html {
+  color-scheme: light;
+}
+html.dark {
+  color-scheme: dark;
+}
+.dark select option,
+.dark select optgroup {
+  background-color: #151d2e; /* surface-850 */
+  color: #f1f5f9; /* slate-100 */
+}

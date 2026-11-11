@@ -35,7 +35,7 @@ pub fn draw(c: &mut Canvas, s: &Status, page: usize, pages: usize) -> Hits {
                 }
             }
             c.text(FontId::Sans, &format!("Wi-Fi：{}", s.hotspot_ssid), 160.0, qy + total + 26.0, 13.0, palette::TEXT, Align::Center);
-            c.text(FontId::Sans, "用 U60 助手 app 扫码，自动连上并配对", 160.0, qy + total + 46.0, 11.0, palette::DIM, Align::Center);
+            c.text(FontId::Sans, "用 SIM 随行 app 扫码，自动连上并配对", 160.0, qy + total + 46.0, 11.0, palette::DIM, Align::Center);
         }
     }
     let y = 354.0;

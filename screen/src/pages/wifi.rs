@@ -98,7 +98,7 @@ pub fn draw(c: &mut Canvas, s: &Status, page: usize, pages: usize) -> Hits {
             hits.push((Action::RelayJoin(n.ssid.clone(), known), [x, ry, w, 42.0]));
         }
     }
-    c.text(FontId::Sans, "新的加密网络请在手机 U60 助手 app 里输入密码", 160.0, 450.0, 10.0, palette::FAINT, Align::Center);
+    c.text(FontId::Sans, "新的加密网络请在手机 SIM 随行 app 里输入密码", 160.0, 450.0, 10.0, palette::FAINT, Align::Center);
     c.page_dots(160.0, 466.0, pages, page);
     hits
 }

@@ -21,6 +21,7 @@ pub fn draw(c: &mut Canvas, s: &Status, set: &Settings, sub: Option<Sub>, page: 
         Some(Sub::Appearance) => appearance(c, set),
         Some(Sub::Display) => display(c, set),
         Some(Sub::Advanced) => advanced(c, s),
+        Some(Sub::Time) => time(c, s),
     };
     if sub.is_none() {
         c.page_dots(160.0, 466.0, pages, page);
@@ -61,7 +62,7 @@ fn home(c: &mut Canvas, s: &Status, set: &Settings) -> Hits {
     let r = tile(c, x, row(3.0), w, 46.0, ("", palette::BLUE), "高级设置", "", None);
     chevron(c, x + w - 16.0, row(3.0) + 23.0);
     hits.push((Action::Open(Sub::Advanced), r));
-    let push = if s.push_enabled { format!("U60 助手 · {} 台手机", s.push_devices) } else { "未开启".into() };
+    let push = if s.push_enabled { format!("SIM 随行 · {} 台手机", s.push_devices) } else { "未开启".into() };
     tile(c, x, row(4.0), w, 46.0, ("推", palette::PURPLE), "消息推送", &push, None);
 
     // Device line.
@@ -96,7 +97,7 @@ fn appearance(c: &mut Canvas, set: &Settings) -> Hits {
     }
     let y = 280.0;
     let custom = std::path::Path::new(&format!("{}/wallpaper.png", crate::settings::HOME)).exists();
-    let note = if custom { "用手机 app 里选的照片" } else { "在手机 U60 助手 app 里选一张照片" };
+    let note = if custom { "用手机 app 里选的照片" } else { "在手机 SIM 随行 app 里选一张照片" };
     let r = tile(c, x, y, w, 56.0, ("", palette::PURPLE), "自定义壁纸", note, None);
     if custom {
         if set.theme == "custom" {
@@ -143,20 +144,84 @@ fn advanced(c: &mut Canvas, s: &Status) -> Hits {
     let mut hits = Hits::new();
     back_header(c, "高级设置", &mut hits);
     let (x, w) = (14.0, 292.0);
-    hits.push((Action::StockUi, tile(c, x, 84.0, w, 56.0, ("", palette::BLUE), "回到原厂界面", "在原厂界面连按三下电源键回来", None)));
+    let r = tile(c, x, 84.0, w, 56.0, ("", palette::PURPLE), "时间与时区", &format!("{} · {}", crate::clock_label(s.clock.offset_min), source_label(&s.clock.source)), None);
+    chevron(c, x + w - 16.0, 112.0);
+    hits.push((Action::Open(Sub::Time), r));
+    hits.push((Action::StockUi, tile(c, x, 148.0, w, 56.0, ("", palette::BLUE), "回到原厂界面", "在原厂界面连按三下电源键回来", None)));
     let rules = if s.adblock.domains > 0 { format!("{:.1} 万条规则", s.adblock.domains as f32 / 10_000.0) } else { "还没有规则".to_string() };
-    hits.push((Action::AdblockUpdate, tile(c, x, 148.0, w, 56.0, ("", palette::GREEN), "更新广告规则", &rules, None)));
+    hits.push((Action::AdblockUpdate, tile(c, x, 212.0, w, 56.0, ("", palette::GREEN), "更新广告规则", &rules, None)));
     let half = (w - 8.0) / 2.0;
-    hits.push((Action::Reboot, button(c, x, 222.0, half, 46.0, "重启", Rgba(255, 190, 70, 80))));
-    hits.push((Action::PowerOff, button(c, x + half + 8.0, 222.0, half, 46.0, "关机", Rgba(255, 95, 90, 80))));
-    c.glass(x, 286.0, w, 92.0, 16.0);
+    hits.push((Action::Reboot, button(c, x, 280.0, half, 44.0, "重启", Rgba(255, 190, 70, 80))));
+    hits.push((Action::PowerOff, button(c, x + half + 8.0, 280.0, half, 44.0, "关机", Rgba(255, 95, 90, 80))));
+    c.glass(x, 336.0, w, 92.0, 16.0);
     let lines = [
         format!("CPU {:.0}% · 温度 {:.0}°C · 内存 {:.0}%", s.cpu_pct, s.temp_c, s.memory_pct),
         format!("电池 {}% · {:.1} W", s.battery, s.battery_watts),
         format!("屏幕程序 v{}", env!("CARGO_PKG_VERSION")),
     ];
     for (i, l) in lines.iter().enumerate() {
-        c.text(FontId::Sans, l, x + 14.0, 312.0 + i as f32 * 24.0, 11.0, palette::DIM, Align::Left);
+        c.text(FontId::Sans, l, x + 14.0, 362.0 + i as f32 * 24.0, 11.0, palette::DIM, Align::Left);
+    }
+    hits
+}
+
+fn source_label(source: &str) -> &'static str {
+    match source {
+        "network" => "跟随蜂窝网络",
+        "phone" => "跟随手机",
+        "manual" => "手动设置",
+        _ => "未获取到时区",
+    }
+}
+
+fn ago(t: u64) -> String {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let d = now.saturating_sub(t);
+    if d < 120 { "刚刚".into() } else if d < 3600 { format!("{} 分钟前", d / 60) } else if d < 86_400 { format!("{} 小时前", d / 3600) } else { format!("{} 天前", d / 86_400) }
+}
+
+const WEEKDAYS: [&str; 7] = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+
+fn time(c: &mut Canvas, s: &Status) -> Hits {
+    let mut hits = Hits::new();
+    back_header(c, "时间与时区", &mut hits);
+    let (x, w) = (14.0, 292.0);
+    let k = &s.clock;
+
+    // Current time as the router shows it.
+    let y = 84.0;
+    c.glass(x, y, w, 92.0, 18.0);
+    c.text(FontId::Digits, &format!("{:02}:{:02}", s.hour, s.minute), x + 16.0, y + 52.0, 40.0, palette::WHITE, Align::Left);
+    c.text(FontId::Sans, &format!("{}月{}日 {}", s.month, s.day, WEEKDAYS[s.weekday as usize % 7]), x + w - 14.0, y + 34.0, 12.0, palette::TEXT, Align::Right);
+    c.text(FontId::Sans, &crate::clock_label(k.offset_min), x + w - 14.0, y + 54.0, 12.0, palette::SKY, Align::Right);
+    let note = if k.manual && !k.zone.starts_with("UTC") { k.zone.clone() } else { source_label(&k.source).to_string() };
+    c.text(FontId::Sans, &note, x + 16.0, y + 78.0, 10.0, palette::DIM, Align::Left);
+
+    let sub = if k.manual { "关闭：用下面的 - / + 自己调" } else { "按蜂窝网络，没有时跟随手机" };
+    hits.push((Action::TzAuto(k.manual), tile(c, x, 186.0, w, 52.0, ("", palette::PURPLE), "自动时区", sub, Some(!k.manual))));
+
+    let mut y = 246.0;
+    if k.manual {
+        c.glass(x, y, w, 52.0, 16.0);
+        hits.push((Action::TzStep(-30), button(c, x + 10.0, y + 8.0, 52.0, 36.0, "-", Rgba(255, 255, 255, 28))));
+        hits.push((Action::TzStep(30), button(c, x + w - 62.0, y + 8.0, 52.0, 36.0, "+", Rgba(255, 255, 255, 28))));
+        c.text(FontId::Digits, &crate::clock_label(k.offset_min), x + w / 2.0, y + 33.0, 17.0, palette::WHITE, Align::Center);
+        y += 60.0;
+    }
+
+    let sync = if !k.time_auto {
+        "关闭：时间只来自蜂窝网络".to_string()
+    } else if !k.sync_error.is_empty() && k.last_sync == 0 {
+        "还没校准成功（需要联网）".to_string()
+    } else if k.last_sync > 0 {
+        format!("上次校准 {}", ago(k.last_sync))
+    } else {
+        "联网后自动校准".to_string()
+    };
+    hits.push((Action::TimeAutoToggle, tile(c, x, y, w, 52.0, ("", palette::BLUE), "自动校时", &sync, Some(k.time_auto))));
+    y += 60.0;
+    if k.time_auto {
+        hits.push((Action::SyncNow, button(c, x, y, w, 40.0, "立即校准时间", Rgba(255, 255, 255, 24))));
     }
     hits
 }

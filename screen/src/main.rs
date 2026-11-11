@@ -309,7 +309,7 @@ impl<'f> App<'f> {
             self.draw_power_menu(&mut c);
         }
         if !s.live {
-            c.text(FontId::Sans, "正在连接 U60 助手…", 160.0, 476.0, 10.0, palette::FAINT, Align::Center);
+            c.text(FontId::Sans, "正在连接 SIM 随行…", 160.0, 476.0, 10.0, palette::FAINT, Align::Center);
         }
         c
     }
@@ -365,6 +365,7 @@ impl<'f> App<'f> {
 
     fn wake(&mut self) {
         self.awake = true;
+        data::AWAKE.store(true, std::sync::atomic::Ordering::Relaxed);
         if self.settings.wake_cover {
             self.view = View::Cover;
             self.sub = None;
@@ -375,6 +376,7 @@ impl<'f> App<'f> {
 
     fn sleep(&mut self) {
         self.awake = false;
+        data::AWAKE.store(false, std::sync::atomic::Ordering::Relaxed);
         self.menu = Menu::None;
         self.anim = None;
     }
@@ -548,7 +550,7 @@ fn splash(disp: &mut display::Display, fonts: &Fonts, wall: &Pixmap, bright: u8,
         c.circle(160.0, 210.0, r + 18.0, palette::BLUE.alpha(0.10 * e));
         c.ring(160.0, 210.0, r, 4.0, e, palette::SKY, palette::PURPLE);
         let size = 26.0 + 6.0 * e;
-        c.text(FontId::Sans, "U60 助手", 160.0, 220.0, size, palette::WHITE.alpha(e), Align::Center);
+        c.text(FontId::Sans, "SIM 随行", 160.0, 220.0, size, palette::WHITE.alpha(e), Align::Center);
         c.text(FontId::Sans, "U60 Pro", 160.0, 300.0, 12.0, palette::DIM.alpha(e * 0.9), Align::Center);
         let _ = disp.present(&c);
         display::set_backlight(((bright as f32) * (0.15 + 0.85 * e)).round() as u8);

@@ -7,6 +7,7 @@ mod call_monitor;
 mod cell;
 mod charge_policy;
 mod conn_watchdog;
+mod clock;
 mod data_plan;
 mod device_ext;
 mod dns_guard;
@@ -120,6 +121,7 @@ fn main() {
     state.push.start(push_sms_rx, Arc::clone(&state));
     state.mms.start(Arc::clone(&state.push));
     state.data_plan.start(Arc::clone(&state));
+    clock::start();
     state.call_monitor.start(Arc::clone(&state));
     ims_guard::start();
     screen_watch::start();

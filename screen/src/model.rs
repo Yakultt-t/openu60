@@ -64,8 +64,9 @@ pub struct Status {
     pub hotspot_enc: String,
     /// Last action result shown as a toast.
     pub toast: Option<(String, std::time::Instant)>,
-    /// Hours from UTC, from the network (NITZ).
+    /// Hours from UTC the clock is shown in (agent's time-zone setting, else NITZ).
     pub tz_hours: f64,
+    pub clock: ClockInfo,
     pub adblock: AdBlock,
     // Mirrored from the screen settings for the drawing code.
     pub speed_bytes: bool,
@@ -73,6 +74,20 @@ pub struct Status {
     pub push_enabled: bool,
     pub push_devices: u32,
     pub missed: Vec<(String, u64)>,
+}
+
+/// The agent's time settings (GET /api/system/time).
+#[derive(Clone, Default)]
+pub struct ClockInfo {
+    pub loaded: bool,
+    pub offset_min: i32,
+    /// "network", "phone", "manual" or "utc".
+    pub source: String,
+    pub zone: String,
+    pub manual: bool,
+    pub time_auto: bool,
+    pub last_sync: u64,
+    pub sync_error: String,
 }
 
 #[derive(Clone, Default)]
@@ -177,6 +192,16 @@ impl Status {
             hotspot_enc: "psk2".into(),
             toast: None,
             tz_hours: 11.0,
+            clock: ClockInfo {
+                loaded: true,
+                offset_min: 660,
+                source: "network".into(),
+                zone: "UTC+11:00".into(),
+                manual: false,
+                time_auto: true,
+                last_sync: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0).saturating_sub(3 * 3600),
+                sync_error: String::new(),
+            },
             adblock: AdBlock {
                 loaded: true,
                 enabled: true,

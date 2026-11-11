@@ -22,6 +22,15 @@ fn main() {
         ("6b-appearance", Box::new(|c: &mut Canvas| { pages::more::draw(c, &s, &openu60_screen::settings::Settings::default(), Some(pages::Sub::Appearance), 5, 6); })),
         ("6c-display", Box::new(|c: &mut Canvas| { pages::more::draw(c, &s, &openu60_screen::settings::Settings::default(), Some(pages::Sub::Display), 5, 6); })),
         ("6d-advanced", Box::new(|c: &mut Canvas| { pages::more::draw(c, &s, &openu60_screen::settings::Settings::default(), Some(pages::Sub::Advanced), 5, 6); })),
+        ("6e-time", Box::new(|c: &mut Canvas| { pages::more::draw(c, &s, &openu60_screen::settings::Settings::default(), Some(pages::Sub::Time), 5, 6); })),
+        ("6f-time-manual", Box::new(|c: &mut Canvas| {
+            let mut m = s.clone();
+            m.clock.manual = true;
+            m.clock.source = "manual".into();
+            m.clock.offset_min = 480;
+            m.clock.zone = "UTC+08:00".into();
+            pages::more::draw(c, &m, &openu60_screen::settings::Settings::default(), Some(pages::Sub::Time), 5, 6);
+        })),
         ("7-call", Box::new(|c: &mut Canvas| { pages::network::draw(c, &s, 0, 5); pages::call::draw(c, &openu60_screen::model::Call { number: "138 0013 8000".into(), state: "来电", since: std::time::Instant::now() }); })),
     ];
     for (name, draw) in pages {

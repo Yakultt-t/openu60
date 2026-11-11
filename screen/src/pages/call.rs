@@ -19,7 +19,7 @@ pub fn draw(c: &mut Canvas, call: &Call) -> Hits {
     let number = if call.number.is_empty() { "未知号码".to_string() } else { call.number.clone() };
     c.text(FontId::Digits, &number, 160.0, 268.0, 30.0, palette::WHITE, Align::Center);
     let sub = match call.state {
-        "来电" => "来电 · 在手机 U60 助手 上接听".to_string(),
+        "来电" => "来电 · 在手机 SIM 随行 上接听".to_string(),
         "呼出" => "正在呼叫…".to_string(),
         _ => {
             let s = call.since.elapsed().as_secs();

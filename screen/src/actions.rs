@@ -88,7 +88,7 @@ pub fn run(action: Action, status: Arc<Mutex<Status>>) {
             }
             Action::RelayJoin(ssid, known) => {
                 if !known {
-                    format!("「{ssid}」需要密码，请在手机 OpenU60 app 里连接")
+                    format!("「{ssid}」需要密码，请在手机 SIM 随行 app 里连接")
                 } else {
                     let psk = last_relay().filter(|(s, _)| *s == ssid).map(|(_, p)| p).unwrap_or_default();
                     // Joining from the screen keeps the hotspot unless "连接 Wi-Fi" is chosen.
@@ -147,6 +147,35 @@ pub fn run(action: Action, status: Arc<Mutex<Status>>) {
                 String::new()
             }
             Action::Hangup => result(api.send("POST", "/api/call/hangup", json!({})), "已挂断", "挂断失败"),
+            Action::TzAuto(on) => {
+                // Turning automatic off starts from the offset shown now.
+                let body = if on {
+                    json!({"tz_mode": "auto"})
+                } else {
+                    json!({"tz_mode": "manual", "zone": crate::clock_label(snapshot.clock.offset_min)})
+                };
+                let r = api.send("PUT", "/api/system/time", body);
+                result(r, if on { "已改成自动时区" } else { "已改成手动时区" }, "设置失败")
+            }
+            Action::TzStep(step) => {
+                let off = (snapshot.clock.offset_min + step).clamp(-12 * 60, 14 * 60);
+                status.lock().unwrap().clock.offset_min = off;
+                let r = api.send("PUT", "/api/system/time", json!({"tz_mode": "manual", "zone": crate::clock_label(off)}));
+                if r.is_none() { "设置失败".to_string() } else { String::new() }
+            }
+            Action::TimeAutoToggle => {
+                let on = !snapshot.clock.time_auto;
+                let r = api.send("PUT", "/api/system/time", json!({"time_auto": on}));
+                result(r, if on { "已打开自动校时" } else { "已关闭自动校时" }, "设置失败")
+            }
+            Action::SyncNow => {
+                let r = api.send("PUT", "/api/system/time", json!({"sync_now": true}));
+                match r {
+                    Some(v) if v["last_sync_error"].as_str().map(|e| e.is_empty()).unwrap_or(true) => "时间已校准".to_string(),
+                    Some(_) => "校准失败，请检查网络".to_string(),
+                    None => "校准失败".to_string(),
+                }
+            }
             _ => String::new(),
         };
         if !msg.is_empty() {

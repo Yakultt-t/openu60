@@ -84,7 +84,7 @@ pub fn draw(c: &mut Canvas, s: &Status, page: usize, pages: usize) {
     c.glass(x, y, w, 44.0, 16.0);
     let dot = if s.remote_mode.is_empty() { palette::FAINT } else { palette::GREEN };
     c.circle(x + 18.0, y + 22.0, 4.0, dot);
-    c.text(FontId::Sans, "U60 助手", x + 30.0, y + 27.0, 13.0, palette::TEXT, Align::Left);
+    c.text(FontId::Sans, "SIM 随行", x + 30.0, y + 27.0, 13.0, palette::TEXT, Align::Left);
     let right = if s.paired_phones == 0 {
         "还没有配对手机".to_string()
     } else {
