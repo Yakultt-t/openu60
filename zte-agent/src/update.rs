@@ -318,11 +318,7 @@ fn run(m: &Manifest) -> Result<(), String> {
             restore.push_str(&format!("cp {p}/{n} {d}.restore && mv {d}.restore {d}\n", p = previous.display(), n = f.name, d = dest));
         }
     }
-    restore.push_str(&format!(
-        "echo '{{\"build\":{b},\"ok\":false,\"at\":'$(date +%s)',\"message\":\"rolled back: the new version did not start\"}}' > {DIR}/result.json\n\
-         rm -f {DIR}/pending\nkillall zte-agent\n",
-        b = m.build
-    ));
+    restore.push_str(&restore_tail(m.build));
     std::fs::write(format!("{DIR}/rollback.sh"), restore).map_err(|e| e.to_string())?;
 
     // Move the new files in (same filesystem, so each swap is atomic).
@@ -347,15 +343,39 @@ fn run(m: &Manifest) -> Result<(), String> {
     }
 
     // Watchdog, detached from the agent: undo the update unless the new agent confirms itself.
-    // Only for this update: a later update writes its own build into `pending`.
-    let watchdog = format!("sleep 150; [ \"$(cat {DIR}/pending 2>/dev/null)\" = \"{b}\" ] && sh {DIR}/rollback.sh", b = m.build);
-    let _ = std::process::Command::new("sh").arg("-c").arg(format!("({watchdog}) >/dev/null 2>&1 &")).status();
+    // Only for this update (a later update writes its own build into `pending`): every 10 s,
+    // stop once the new agent has confirmed itself; roll back when no agent has been running
+    // for 30 s (a crash loop) or after 150 s without confirmation.
+    let watchdog = watchdog_script(m.build);
+    std::fs::write(format!("{DIR}/watchdog.sh"), watchdog).map_err(|e| e.to_string())?;
+    let _ = std::process::Command::new("sh").arg("-c").arg(format!("(sh {DIR}/watchdog.sh) >/dev/null 2>&1 &")).status();
 
     eprintln!("[update] installed build {}; restarting", m.build);
     STATE.lock().unwrap().state = "restarting".into();
     std::thread::sleep(Duration::from_secs(2));
     // The supervisor starts the new binary a few seconds after this exit.
     std::process::exit(0);
+}
+
+/// End of rollback.sh: record the failure and restart the supervisor at once.
+fn restore_tail(b: u32) -> String {
+    format!(
+        "echo '{{\"build\":{b},\"ok\":false,\"at\":'$(date +%s)',\"message\":\"rolled back: the new version did not start\"}}' > {DIR}/result.json\n\
+         rm -f {DIR}/pending\n\
+         # Restart the supervisor at once: after repeated crashes it waits 60 s between tries.\n\
+         touch /tmp/zte-agent.stop\n\
+         for d in /proc/[0-9]*; do [ \"$(tr '\\0' '\\n' < $d/cmdline 2>/dev/null | sed -n 2p)\" = /data/local/tmp/zte-agent-run.sh ] && kill ${{d#/proc/}} 2>/dev/null; done\n\
+         killall zte-agent 2>/dev/null\nsleep 2\nrm -f /tmp/zte-agent.stop\nsh /data/local/tmp/start_zte_agent.sh\n"
+    )
+}
+
+fn watchdog_script(b: u32) -> String {
+    format!(
+        "#!/bin/sh\nmine() {{ [ \"$(cat {DIR}/pending 2>/dev/null)\" = \"{b}\" ]; }}\n\
+         down=0\nfor i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do\n  sleep 10\n  mine || exit 0\n\
+           if pidof zte-agent >/dev/null; then down=0; else down=$((down + 1)); fi\n\
+           [ $down -ge 3 ] && break\ndone\nmine && sh {DIR}/rollback.sh\n"
+    )
 }
 
 /// On startup: look for updates now and then (so the app can show a badge without asking
@@ -396,6 +416,17 @@ mod tests {
         assert!(verify(b"{}", b"not base64!").is_err());
         let zero_sig = base64::engine::general_purpose::STANDARD.encode([0u8; 64]);
         assert!(verify(b"{}", zero_sig.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn generated_scripts_are_valid_shell() {
+        for (name, text) in [("tail", format!("#!/bin/sh\n{}", restore_tail(7))), ("watchdog", watchdog_script(7))] {
+            let path = std::env::temp_dir().join(format!("openu60-{name}-{}.sh", std::process::id()));
+            std::fs::write(&path, text).unwrap();
+            let ok = std::process::Command::new("sh").arg("-n").arg(&path).status().unwrap().success();
+            let _ = std::fs::remove_file(&path);
+            assert!(ok, "{name} script has a syntax error");
+        }
     }
 
     #[test]
