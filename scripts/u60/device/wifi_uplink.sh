@@ -321,10 +321,11 @@ do_mode() {
     case "$mode" in
         hotspot)
             log "mode hotspot"
-            do_disconnect >/dev/null
-            ensure_bss on on
-            save_mode hotspot "" ""
-            printf '{"ok":true,"mode":"hotspot","hotspot_2g":"%s","hotspot_5g":"%s"}\n' "$(bss_state 2g)" "$(bss_state 5g)"
+            # Answer first, then switch: leaving the Wi-Fi takes the request's way back with
+            # it when the app reaches the router there, and bringing both bands up can need
+            # a firmware reload (over a minute), longer than any client waits.
+            ( sleep 1; do_disconnect ) >/dev/null 2>&1 &
+            printf '{"ok":true,"mode":"hotspot","pending":true}\n'
             ;;
         client|repeater)
             [ -n "$ssid" ] || { echo '{"ok":false,"error":"missing ssid"}'; return 1; }
@@ -386,7 +387,23 @@ do_restore() {
     sleep 2
     out=$(do_connect "$ssid" "$bssid")
     log "restore result: $out"
-    if printf '%s\n' "$out" | grep -q '"up":true'; then remember_band; else ensure_bss on on; fi
+    if printf '%s\n' "$out" | grep -q '"up":true'; then
+        remember_band
+        # Client mode means the router's own hotspot is off. The other band stays on through
+        # the restore so the router can be reached if the uplink fails; once the uplink has
+        # held for two minutes the mode the owner chose applies again. (It used to stay on
+        # for good, and the app then showed the router as a repeater after every reboot.)
+        if [ "$mode" = client ]; then
+            other=2g; [ "$band" = 2g ] && other=5g
+            ( sleep 120
+              [ "$(current_mode)" = client ] || exit 0
+              do_status | grep -q '"up":true' || exit 0
+              bss_set "$other" off
+              log "restore: uplink held for 2 min; client mode, hotspot $other off" ) >/dev/null 2>&1 &
+        fi
+    else
+        ensure_bss on on
+    fi
 }
 
 do_disconnect() {

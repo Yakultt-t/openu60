@@ -164,12 +164,13 @@ fn uplink_icon(c: &mut Canvas, x: f32, y: f32, s: &Status) {
     }
     let label = if s.uplink_mode == "client" { "Wi-Fi" } else { "中继" };
     let w = c.text(FontId::Sans, label, x, y, 10.0, palette::MINT, Align::Right);
-    wifi_bars(c, x - w - 10.0, y - 1.0, s.wifi_uplink_signal);
+    wifi_bars(c, x - w - 9.0, y - 1.0, s.wifi_uplink_signal);
 }
 
 pub fn signal_bars(c: &mut Canvas, x: f32, y: f32, bars: u8) {
     for i in 0..4u8 {
-        let h = 4.0 + i as f32 * 2.5;
+        // 3.5 … 10 px, the cap height of the 13 px status text, bottoms on its baseline.
+        let h = 3.5 + i as f32 * 2.2;
         let col = if i < bars { palette::TEXT } else { Rgba(255, 255, 255, 70) };
         c.rrect(x + i as f32 * 4.0, y + 11.0 - h, 3.0, h, 1.0, col);
     }
@@ -178,7 +179,7 @@ pub fn signal_bars(c: &mut Canvas, x: f32, y: f32, bars: u8) {
 pub fn wifi_bars(c: &mut Canvas, x: f32, y: f32, dbm: i32) {
     let bars = if dbm >= -55 { 3 } else if dbm >= -67 { 2 } else if dbm >= -78 { 1 } else { 0 };
     for i in 0..3 {
-        let r = 4.0 + i as f32 * 4.0;
+        let r = 2.8 + i as f32 * 2.8;
         let col = if i < bars.max(1) { palette::TEXT } else { Rgba(255, 255, 255, 60) };
         let mut pb = tiny_skia::PathBuilder::new();
         let steps = 10;
@@ -188,10 +189,10 @@ pub fn wifi_bars(c: &mut Canvas, x: f32, y: f32, dbm: i32) {
             if k == 0 { pb.move_to(px, py) } else { pb.line_to(px, py) }
         }
         if let Some(p) = pb.finish() {
-            c.stroke_path(&p, col, 1.8);
+            c.stroke_path(&p, col, 1.7);
         }
     }
-    c.circle(x, y, 1.6, palette::TEXT);
+    c.circle(x, y, 1.5, palette::TEXT);
 }
 
 pub fn battery_icon(c: &mut Canvas, x: f32, y: f32, pct: u8, charging: bool) {

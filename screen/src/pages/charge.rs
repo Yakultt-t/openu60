@@ -17,6 +17,9 @@ pub fn draw(c: &mut Canvas, s: &Status, page: usize, pages: usize) -> Hits {
     c.text(FontId::Sans, "%", x + 18.0 + a, y + 52.0, 12.0, palette::DIM, Align::Left);
     let state = if s.charging {
         "正在充电"
+    } else if s.powerbank {
+        // The USB-C port is giving power out, so a cable to a computer does not charge.
+        "反向供电中 · 不会充电"
     } else if s.charger_connected && s.charge_limit_enabled && s.battery as u32 >= s.charge_limit.saturating_sub(5) {
         "已到上限 · 用充电器的电"
     } else if s.charger_connected {

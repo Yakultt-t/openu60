@@ -71,7 +71,7 @@ pub fn draw(c: &mut Canvas, s: &Status, page: usize, pages: usize) {
     c.text(FontId::Sans, "电池", x + 14.0, y + 20.0, 12.0, palette::DIM, Align::Left);
     let a = c.text(FontId::Digits, &s.battery.to_string(), x + 14.0, y + 52.0, 32.0, palette::WHITE, Align::Left);
     c.text(FontId::Sans, "%", x + 17.0 + a, y + 52.0, 11.0, palette::DIM, Align::Left);
-    let state = if s.charging { "正在充电" } else { "未接电源" };
+    let state = if s.charging { "正在充电" } else if s.powerbank { "反向供电中" } else { "未接电源" };
     c.text(FontId::Sans, state, x + 14.0, y + 68.0, 11.0, palette::DIM, Align::Left);
     if let Some(hrs) = s.battery_hours {
         c.text(FontId::Sans, &format!("约可用 {hrs:.0} 小时"), x + w - 14.0, y + 20.0, 11.0, palette::DIM, Align::Right);
