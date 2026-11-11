@@ -50,6 +50,8 @@ R="$OUT/router"
 cp "$REPO/target-release-public/aarch64-unknown-linux-musl/release/openu60-screen" "$R/openu60-screen-b$BUILD"
 for f in zte-agent-run.sh wifi_uplink.sh wifi_uplink_dhcp.sh; do cp "$REPO/scripts/u60/device/$f" "$R/${f%.sh}-b$BUILD.sh"; done
 for c in $CHANNELS; do cp "$REPO/target-release-$c/aarch64-unknown-linux-musl/release/zte-agent" "$R/zte-agent-$c-b$BUILD"; done
+# Installs from the router itself (UFI-TOOLS plugin, ssh/adb); fixed name so its URL stays put.
+cp "$REPO/scripts/u60/device/openu60-netinstall.sh" "$R/openu60-netinstall.sh"
 
 echo "== checking for build-machine paths"
 for f in "$R"/*; do
