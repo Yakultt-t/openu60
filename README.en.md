@@ -19,6 +19,7 @@ OpenU60 keeps a Chinese SIM card in a ZTE U60 Pro. An agent runs on the router, 
 - [What it does](#what-it-does)
 - [Phone app](#phone-app)
 - [Supported hardware and firmware](#supported-hardware-and-firmware)
+- [Easiest: download the installer (Windows / Mac / Linux)](#easiest-download-the-installer-windows--mac--linux)
 - [Install option 1: U60 Toolkit (recommended)](#install-option-1-u60-toolkit-recommended)
 - [Install option 2: command-line scripts](#install-option-2-command-line-scripts)
 - [Using it](#using-it)
@@ -77,9 +78,21 @@ Push alerts for calls, answering on the lock screen and call audio on the phone 
 | Router | ZTE U60 Pro (MU5250), hardware `MU5250_HW1.0` (Qualcomm SDX75, ZWRT/OpenWrt 23.05) |
 | Tested firmware | International `STD_PL_MU5250V1.0.0B02` |
 | Other firmware | Chinese B27/B31, Hong Kong and others are **not tested**. SMS encryption, Wi-Fi uplink and call audio are written for the STD firmware and may not work elsewhere; the community reports that B31 blocks enabling ADB from the web UI |
-| Computer | A Mac (enabling ADB, building and installing all happen on the Mac; tested on Apple Silicon) |
+| Computer | Windows 10/11, Mac or Linux with the downloadable installer; building from source needs a Mac (tested on Apple Silicon) |
 | Cable | A USB-C cable that carries data |
 | SIM card | International roaming enabled; the local network must support VoLTE roaming for this card, especially in countries that have shut down 2G/3G |
+
+## Easiest: download the installer (Windows / Mac / Linux)
+
+No developer tools and no compiling. Open [Releases](https://github.com/Yakultt-t/openu60/releases), find the newest "安装程序 / Installer" release and download the file for your system: `OpenU60-Installer-Windows-x64-relay.exe` or `OpenU60-Installer-Windows-x64.exe` (see below), `OpenU60-Installer-macOS-arm64` or `OpenU60-Installer-Linux-x64`.
+
+It is a single file that already contains the router programs. Double-click it (on Mac/Linux, run it in a terminal) and pick menu numbers: 1 enable USB debugging (router admin password), 2 back up the router configuration, 3 optional full eMMC backup (~7.6 GB, verified per chunk), 4 install / update (shows the **SIM Go password** once — keep it for pairing), 5 status, 6 uninstall. The menu is in Chinese; the same actions work as arguments: `enable-adb`, `status`, `backup [dir]`, `backup-full [dir]`, `install [--new-password]`, `uninstall`.
+
+On Windows: the file is not code-signed, so SmartScreen may say "Windows protected your PC" (More info → Run anyway). If adb is missing the tool offers to download Google's platform-tools. Windows has no driver for the router's ADB interface out of the box: if ADB is not detected after step 1, the tool downloads Google's USB driver, opens Device Manager and walks you through picking "Android ADB Interface" for the device with the yellow mark (once per PC).
+
+On a Mac, clear the download quarantine first: `xattr -d com.apple.quarantine OpenU60-Installer-macOS-arm64 && chmod +x OpenU60-Installer-macOS-arm64`.
+
+The two Windows files differ only in remote access. The `-relay` one uses a relay run by the author, so the phone can reach the router from anywhere without a server of your own; traffic is end-to-end encrypted and the relay only forwards it. It is a free personal service with no guarantee, and you can point the app at your own relay later. Every other file has **no default relay or push server**, the same as a build from source: it works on your home network, and remote access needs your own relay ([remote access](docs/openu60/remote-access.md)). Source: [`desktop/openu60-installer/`](desktop/openu60-installer/); `build_release.sh` builds the same files.
 
 ## Install option 1: U60 Toolkit (recommended)
 

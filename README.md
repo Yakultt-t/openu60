@@ -17,6 +17,7 @@ OpenU60 让中国手机卡常驻在中兴 U60 Pro 里。路由器上运行一个
 - [能做什么](#能做什么)
 - [手机 App](#手机-app)
 - [支持的硬件和固件](#支持的硬件和固件)
+- [最简单：下载安装程序（Windows / Mac / Linux）](#最简单下载安装程序windows--mac--linux)
 - [安装方法一：U60 刷机助手（推荐）](#安装方法一u60-刷机助手推荐)
 - [安装方法二：命令行脚本](#安装方法二命令行脚本)
 - [装好之后怎么用](#装好之后怎么用)
@@ -75,9 +76,44 @@ OpenU60 让中国手机卡常驻在中兴 U60 Pro 里。路由器上运行一个
 | 路由器 | 中兴 U60 Pro（MU5250），硬件版本 `MU5250_HW1.0`（高通 SDX75，ZWRT/OpenWrt 23.05） |
 | 已验证固件 | 海外版 `STD_PL_MU5250V1.0.0B02` |
 | 其他固件 | 国行 B27/B31、港版等都**未验证**。短信加密、Wi-Fi 上行、通话音频都是按 STD 固件写的，别的固件上可能不工作；据社区反馈，B31 封堵了网页开启 ADB 的方法 |
-| 电脑 | 一台 Mac（开启 ADB、编译和安装都在 Mac 上做；已在 Apple Silicon 上测试） |
+| 电脑 | Windows 10/11、Mac 或 Linux 用下载好的安装程序；从源码构建需要 Mac（已在 Apple Silicon 上测试） |
 | 数据线 | 能传数据的 USB-C 线 |
 | 手机卡 | 需开通国际漫游；当地网络必须支持这张卡的 VoLTE 漫游，在已关闭 2G/3G 的国家尤其如此 |
+
+## 最简单：下载安装程序（Windows / Mac / Linux）
+
+不用装开发工具、不用编译。到 [Releases](https://github.com/Yakultt-t/openu60/releases) 找最新的「安装程序 / Installer」，下载对应系统的文件：
+
+| 系统 | 文件 |
+|---|---|
+| Windows 10/11（64 位），想在外面也能用手机连路由器 | `OpenU60-Installer-Windows-x64-relay.exe`（带作者的中继，见下） |
+| Windows 10/11（64 位），只在家里用或自建中继 | `OpenU60-Installer-Windows-x64.exe` |
+| Mac（Apple 芯片） | `OpenU60-Installer-macOS-arm64` |
+| Linux（x86-64） | `OpenU60-Installer-Linux-x64` |
+
+它是一个文件，里面已经带着路由器要装的程序。双击运行（Mac/Linux 在终端里运行），按菜单数字操作：
+
+1. **开启 USB 调试**：USB 线连好路由器，电脑连上路由器的 Wi-Fi，输入路由器后台密码。
+2. **备份路由器配置**：几秒钟，保存在用户文件夹的 `OpenU60-备份` 里。
+3. **完整备份**（可选）：把整块存储读出来（约 7.6 GB，半小时左右），每一块都校验。
+4. **安装 / 更新**：装好后会显示一次 **SIM 随行密码**，抄下来，手机 App 配对时要用。
+5. 查看状态、6. 卸载。
+
+**Windows 第一次用要注意两件事：**
+
+- 程序没有付费签名，Windows 可能弹出「Windows 已保护你的电脑」，点「更多信息」→「仍要运行」。
+- 电脑里没有 adb 时，程序会问你要不要从 Google 官网下载，选是就行。Windows 默认**不认识**路由器的调试接口：第 1 步之后如果电脑认不出 ADB，程序会下载 Google 官方 USB 驱动、打开设备管理器，并告诉你每一步点哪里（在带黄色感叹号的设备上手动选「Android ADB Interface」）。这一步每台电脑只做一次。
+
+**Mac 下载后**要先在终端里运行 `xattr -d com.apple.quarantine OpenU60-Installer-macOS-arm64 && chmod +x OpenU60-Installer-macOS-arm64`，再 `./OpenU60-Installer-macOS-arm64`。
+
+也可以不进菜单，直接带参数运行：`enable-adb`、`status`、`backup [目录]`、`backup-full [目录]`、`install [--new-password]`、`uninstall`。源码在 [`desktop/openu60-installer/`](desktop/openu60-installer/)，`build_release.sh` 可以自己构建同样的文件。
+
+**两个 Windows 版本的区别只有远程访问：**
+
+- `-relay` 版默认用作者自己架设的中继：人在外面时手机也能连上路由器，不用自己买服务器。连接是端到端加密的，中继只转发看不懂的数据。这是作者个人免费提供的，不保证一直可用，也可能随时调整；之后在手机 App 里也可以改成自己的中继。
+- 不带后缀的版本（以及 Mac、Linux 版）**不带任何默认中继和推送服务器**，和自己编译的一样：在家里局域网直接用；在外面远程访问要自己部署中继，见[远程访问与中继](docs/openu60/remote-access.md)。
+
+两个版本都不带推送服务器。
 
 ## 安装方法一：U60 刷机助手（推荐）
 

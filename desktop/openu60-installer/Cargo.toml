@@ -1,0 +1,28 @@
+[package]
+name = "openu60-installer"
+version = "0.1.0"
+edition = "2021"
+description = "Installs OpenU60 (zte-agent) on a ZTE U60 Pro over ADB: Windows, macOS and Linux"
+license = "MIT"
+
+[[bin]]
+name = "openu60-installer"
+path = "src/main.rs"
+
+[dependencies]
+ureq = "3"
+serde_json = "1"
+sha2 = "0.10"
+md-5 = "0.10"
+hex = "0.4"
+flate2 = "1"
+rpassword = "7"
+getrandom = "0.2"
+
+# Built on its own (host tool, not part of the router workspace).
+[workspace]
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
