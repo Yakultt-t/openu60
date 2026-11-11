@@ -449,6 +449,9 @@ pub fn route(method: &Method, path: &str, state: &AppState, body: &[u8]) -> (u16
         (&Method::Put, "/api/wifi/wan/mode") => wifi_wan::mode_set(state, body),
         // Modem
         (&Method::Get, "/api/data-usage") => handlers::data_usage(state),
+        (&Method::Get, "/api/update/status") => crate::update::status(),
+        (&Method::Post, "/api/update/check") => crate::update::check(),
+        (&Method::Post, "/api/update/apply") => crate::update::apply(),
         (&Method::Get, "/api/system/time") => crate::clock::get(),
         (&Method::Put, "/api/system/time") => crate::clock::set(body),
         (&Method::Get, "/api/system/timezones") => crate::clock::zones(),

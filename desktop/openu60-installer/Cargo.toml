@@ -1,6 +1,6 @@
 [package]
 name = "openu60-installer"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Installs OpenU60 (zte-agent) on a ZTE U60 Pro over ADB: Windows, macOS and Linux"
 license = "MIT"

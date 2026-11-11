@@ -106,6 +106,8 @@ OpenU60 让中国手机卡常驻在中兴 U60 Pro 里。路由器上运行一个
 
 **Mac 下载后**要先在终端里运行 `xattr -d com.apple.quarantine OpenU60-Installer-macOS-arm64 && chmod +x OpenU60-Installer-macOS-arm64`，再 `./OpenU60-Installer-macOS-arm64`。
 
+**以后更新不用电脑：** 用 v0.2.0 及以后的安装程序装过一次，之后路由器软件可以直接在手机 App「设置 → 设备 → 路由器软件」里在线更新。路由器自己从本仓库的 Releases 下载更新包，核对签名和每个文件的校验值后才替换；新版本如果启动不了，路由器会在几分钟内自动恢复旧版本。用 v0.1.0 装的，需要再用新安装程序装一次（保留密码，不会清数据）。
+
 也可以不进菜单，直接带参数运行：`enable-adb`、`status`、`backup [目录]`、`backup-full [目录]`、`install [--new-password]`、`uninstall`。源码在 [`desktop/openu60-installer/`](desktop/openu60-installer/)，`build_release.sh` 可以自己构建同样的文件。
 
 **两个 Windows 版本的区别只有远程访问：**

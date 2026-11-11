@@ -70,3 +70,8 @@ desktop/U60Toolkit/U60Toolkit.xcodeproj/
 desktop/U60Toolkit/Resources/payload/zte-agent-run.sh
 desktop/U60Toolkit/Resources/payload/wifi_uplink.sh
 desktop/U60Toolkit/Resources/payload/wifi_uplink_dhcp.sh
+
+# Release builds (scripts/u60/release.sh)
+/dist-release/
+/target-release-*/
+/desktop/openu60-installer/target-*/

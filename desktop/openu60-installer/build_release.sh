@@ -1,6 +1,7 @@
 #!/bin/bash
-# Builds the downloadable installer: the router agent from this checkout (with NO private
-# relay / push defaults), embedded into one installer file per desktop platform.
+# Builds installers from your own checkout (agent with NO relay / push defaults, channel "dev",
+# so it never replaces itself with official online updates). Official releases, with online
+# updates, are made by scripts/u60/release.sh.
 # Output: desktop/openu60-installer/dist/ (+ SHA256SUMS). Needs rustup, zig and cargo-zigbuild.
 #   desktop/openu60-installer/build_release.sh
 set -eu
@@ -11,7 +12,9 @@ export PATH="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin:$HOME/.car
 # A public download must not carry anyone's own server or build paths.
 unset OPENU60_DEFAULT_RELAYS OPENU60_PUSH_GATEWAY OPENU60_PAYLOAD
 EMPTY_HOME="$(mktemp -d)"
-export RUSTFLAGS="--remap-path-prefix=$HOME=/build --remap-path-prefix=$REPO=/src"
+# Encoded form (0x1f-separated) because the checkout path may contain spaces.
+unset RUSTFLAGS
+export CARGO_ENCODED_RUSTFLAGS="--remap-path-prefix=$HOME=/build"$'\x1f'"--remap-path-prefix=$REPO=/src"
 
 echo "== router agent and touchscreen program (aarch64 musl)"
 U60_HOME="$EMPTY_HOME" "$REPO/scripts/u60/06_build_agent.sh"
