@@ -215,6 +215,9 @@ struct App<'f> {
     anim: Option<Anim>,
     last_call: bool,
     last_unread: u32,
+    /// 短信 page: list page, and messages skipped from the newest in a conversation.
+    sms_page: usize,
+    sms_skip: usize,
     presses: Presses,
     exit: Option<&'static str>,
 }
@@ -241,10 +244,11 @@ impl<'f> App<'f> {
             View::Cover => { pages::cover::draw(&mut c, s); Hits::new() }
             View::Pages => match page {
                 0 => { pages::network::draw(&mut c, s, page, PAGES); Hits::new() }
-                1 => pages::wifi::draw(&mut c, s, page, PAGES),
-                2 => pages::charge::draw(&mut c, s, page, PAGES),
-                3 => pages::adblock::draw(&mut c, s, page, PAGES),
-                4 => pages::pair::draw(&mut c, s, page, PAGES),
+                1 => pages::sms::draw(&mut c, s, sub, if sub.is_some() { self.sms_skip } else { self.sms_page }, page, PAGES),
+                2 => pages::wifi::draw(&mut c, s, page, PAGES),
+                3 => pages::charge::draw(&mut c, s, page, PAGES),
+                4 => pages::adblock::draw(&mut c, s, page, PAGES),
+                5 => pages::pair::draw(&mut c, s, page, PAGES),
                 _ => pages::more::draw(&mut c, s, &self.settings, sub, page, PAGES),
             },
         };
@@ -435,6 +439,26 @@ impl<'f> App<'f> {
             Action::ToggleSpeedUnit => { self.settings.speed_bytes = !self.settings.speed_bytes; self.save_settings(); }
             Action::Open(sub) => { self.sub = Some(sub); self.slide(prev, (-1.0, 0.0), 0.0); }
             Action::Back => { self.sub = None; self.slide(prev, (1.0, 0.0), 0.0); }
+            Action::SmsOpen(key) => {
+                self.sub = Some(Sub::Sms(key));
+                self.sms_skip = 0;
+                self.slide(prev, (-1.0, 0.0), 0.0);
+                let unread: Vec<i64> = {
+                    let s = self.status.lock().unwrap();
+                    s.sms.iter().filter(|m| m.unread && pages::sms::thread_key(&m.number) == key).map(|m| m.id).collect()
+                };
+                if !unread.is_empty() {
+                    actions::run(Action::SmsMarkRead(unread), self.status.clone());
+                }
+            }
+            Action::SmsScroll(d) => {
+                if matches!(self.sub, Some(Sub::Sms(_))) {
+                    // Up shows older messages; three at a time.
+                    self.sms_skip = if d < 0 { self.sms_skip + 3 } else { self.sms_skip.saturating_sub(3) };
+                } else {
+                    self.sms_page = (self.sms_page as i32 + d).max(0) as usize;
+                }
+            }
             Action::StockUi => self.exit = Some("stock"),
             Action::PowerMenu | Action::Reboot | Action::PowerOff => self.menu = Menu::Power,
             other => actions::run(other, self.status.clone()),
@@ -611,7 +635,7 @@ fn run() -> i32 {
         fonts: &fonts, wall, wall_key: (settings.theme.clone(), settings::mtime(&custom)), status, settings,
         settings_mtime: settings::mtime(&settings::path()), view: View::Cover, page: 0, sub: None, menu: Menu::None,
         awake: true, last_input: Instant::now(), hits: Hits::new(), overlay_hits: Hits::new(),
-        menu_hits: Vec::new(), touch_start: None, drag: (0.0, 0.0), anim: None, last_call: false, last_unread: u32::MAX,
+        menu_hits: Vec::new(), touch_start: None, drag: (0.0, 0.0), anim: None, last_call: false, last_unread: u32::MAX, sms_page: 0, sms_skip: 0,
         presses: Presses { times: Vec::new() }, exit: None,
     };
     let first = app.frame();
@@ -648,6 +672,7 @@ fn run() -> i32 {
 
     let mut last_draw = Instant::now();
     let mut last_reload = Instant::now();
+    let mut last_sms: Option<Instant> = None;
     let mut was_awake = true;
     let mut last_frame: Option<Pixmap> = None;
     while !STOP.load(Ordering::SeqCst) && app.exit.is_none() {
@@ -665,13 +690,19 @@ fn run() -> i32 {
         if last_reload.elapsed() > Duration::from_secs(2) {
             last_reload = Instant::now();
             app.reload_settings();
+            // On the 短信 page: fresh messages every 10 s.
+            if app.awake && app.view == View::Pages && app.page == 1 && last_sms.map(|t| t.elapsed() > Duration::from_secs(10)).unwrap_or(true) {
+                last_sms = Some(Instant::now());
+                data::SMS_REFRESH.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
         }
         let (calling, unread) = { let s = app.status.lock().unwrap(); (s.call.is_some(), s.unread_sms) };
         if app.last_unread == u32::MAX {
             if app.status.lock().unwrap().live { app.last_unread = unread; }
         } else if unread > app.last_unread {
             if !app.awake { app.wake(); }
-            app.status.lock().unwrap().toast = Some((format!("{unread} 条新短信，请在手机上查看"), Instant::now()));
+            app.status.lock().unwrap().toast = Some((format!("{unread} 条新短信，在「短信」页查看"), Instant::now()));
+            data::SMS_REFRESH.store(true, std::sync::atomic::Ordering::Relaxed);
             dirty = true;
             app.last_unread = unread;
         } else {

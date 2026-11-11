@@ -5,6 +5,7 @@ pub mod cover;
 pub mod more;
 pub mod network;
 pub mod pair;
+pub mod sms;
 pub mod wifi;
 
 use crate::gfx::{palette, Align, Canvas, FontId, Rgba};
@@ -45,6 +46,12 @@ pub enum Action {
     TzStep(i32),
     TimeAutoToggle,
     SyncNow,
+    /// Open a conversation on the 短信 page (its `sms::thread_key`).
+    SmsOpen(u64),
+    /// -1 up / 1 down: list pages, or older / newer messages in a conversation.
+    SmsScroll(i32),
+    /// Mark these messages read on the router.
+    SmsMarkRead(Vec<i64>),
 }
 
 pub type Hits = Vec<(Action, [f32; 4])>;
@@ -56,6 +63,8 @@ pub enum Sub {
     Display,
     Advanced,
     Time,
+    /// A conversation on the 短信 page.
+    Sms(u64),
 }
 
 /// "‹ 设置" back link at the top left of a sub-page.
@@ -104,7 +113,7 @@ pub fn chevron(c: &mut Canvas, x: f32, y: f32) {
 }
 
 /// Page titles in swipe order (the cover comes before them).
-pub const TITLES: [&str; 6] = ["网络", "上网方式", "充电", "广告拦截", "连接与配对", "设置"];
+pub const TITLES: [&str; 7] = ["网络", "短信", "上网方式", "充电", "广告拦截", "连接与配对", "设置"];
 
 pub fn header(c: &mut Canvas, title: &str) {
     c.text(FontId::Sans, title, 18.0, 66.0, 22.0, palette::WHITE, Align::Left);

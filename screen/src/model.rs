@@ -74,6 +74,20 @@ pub struct Status {
     pub push_enabled: bool,
     pub push_devices: u32,
     pub missed: Vec<(String, u64)>,
+    /// Messages, newest first (read for the 短信 page while the screen is on).
+    pub sms: Vec<Sms>,
+    pub sms_loaded: bool,
+}
+
+#[derive(Clone, Default, Debug)]
+pub struct Sms {
+    pub id: i64,
+    pub number: String,
+    pub text: String,
+    /// "11-11 18:29" as the network stamped it.
+    pub time: String,
+    pub incoming: bool,
+    pub unread: bool,
 }
 
 /// The agent's time settings (GET /api/system/time).
@@ -222,6 +236,14 @@ impl Status {
             push_enabled: true,
             push_devices: 2,
             missed: vec![("138 0013 8000".into(), 0)],
+            sms_loaded: true,
+            sms: vec![
+                Sms { id: 6, number: "10086".into(), text: "【中国移动】尊敬的客户，您本月套餐内国内流量已使用 80%，剩余 4.0GB。".into(), time: "11-12 09:12".into(), incoming: true, unread: true },
+                Sms { id: 5, number: "+61 412 345 678".into(), text: "马上到，大概十分钟".into(), time: "11-11 21:42".into(), incoming: false, unread: false },
+                Sms { id: 4, number: "+61 412 345 678".into(), text: "到了吗？我在门口等你".into(), time: "11-11 21:40".into(), incoming: true, unread: false },
+                Sms { id: 3, number: "1069 0000 1234".into(), text: "【银行】验证码 482913，5 分钟内有效，请勿泄露。".into(), time: "11-11 18:29".into(), incoming: true, unread: false },
+                Sms { id: 2, number: "+61 412 345 678".into(), text: "晚上一起吃饭吗".into(), time: "11-11 17:05".into(), incoming: true, unread: false },
+            ],
         }
     }
 }

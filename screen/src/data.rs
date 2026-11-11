@@ -18,6 +18,8 @@ const HISTORY: usize = 60;
 
 /// Set by actions: poll everything on the next tick instead of waiting.
 pub static REFRESH: AtomicBool = AtomicBool::new(false);
+/// Read the messages on the next tick (a new message arrived, or the page asked).
+pub static SMS_REFRESH: AtomicBool = AtomicBool::new(false);
 /// Screen on: only then is the modem asked for its rate every second.
 pub static AWAKE: AtomicBool = AtomicBool::new(true);
 /// Minutes from UTC to show the clock in; NO_TZ until known.
@@ -118,6 +120,47 @@ fn local_time(offset_min: i32) -> (u32, u32, u32, u32, u32) {
     let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
     let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
     ((secs / 3600) as u32, ((secs % 3600) / 60) as u32, month, day, weekday)
+}
+
+/// SMS body: UCS-2 hex (UTF-16BE, 4 hex digits per unit), as the firmware stores it.
+fn decode_ucs2(hex: &str) -> String {
+    let units: Vec<u16> = hex
+        .as_bytes()
+        .chunks(4)
+        .filter_map(|q| std::str::from_utf8(q).ok().filter(|q| q.len() == 4).and_then(|q| u16::from_str_radix(q, 16).ok()))
+        .collect();
+    String::from_utf16_lossy(&units)
+}
+
+/// "26,11,11,18,29,00,+32" (yy,MM,dd,HH,mm,ss,tz) -> "11-11 18:29".
+fn sms_time(date: &str) -> String {
+    let p: Vec<&str> = date.split(',').map(str::trim).collect();
+    if p.len() >= 5 { format!("{}-{} {}:{}", p[1], p[2], p[3], p[4]) } else { date.to_string() }
+}
+
+fn parse_sms(v: &Value) -> Vec<crate::model::Sms> {
+    let mut out: Vec<crate::model::Sms> = v["messages"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|m| {
+            let id = m["id"].as_i64().or_else(|| m["id"].as_str().and_then(|s| s.parse().ok()))?;
+            let tag = m["tag"].as_str().map(str::to_string).or_else(|| m["tag"].as_i64().map(|t| t.to_string())).unwrap_or_default();
+            if tag == "4" {
+                return None; // draft
+            }
+            let raw = m["content"].as_str().unwrap_or("");
+            let text = decode_ucs2(raw);
+            Some(crate::model::Sms {
+                id,
+                number: m["number"].as_str().unwrap_or("").to_string(),
+                text: if text.trim().is_empty() { raw.to_string() } else { text },
+                time: sms_time(m["date"].as_str().unwrap_or("")),
+                incoming: tag == "0" || tag == "1",
+                unread: tag == "1",
+            })
+        }).collect())
+        .unwrap_or_default();
+    out.sort_by(|a, b| b.id.cmp(&a.id));
+    out
 }
 
 /// The modem's own rate for the data bearer, in bits per second (down, up).
@@ -405,6 +448,10 @@ fn run(status: Arc<Mutex<Status>>) {
                 }));
             }
             if let Some(c) = api.get("/api/sms/capacity") {
+                // Read the messages themselves twice a minute while the screen is on.
+                if AWAKE.load(Ordering::Relaxed) && tick % 30 == 0 {
+                    SMS_REFRESH.store(true, Ordering::Relaxed);
+                }
                 update.push(Box::new(move |s: &mut Status| {
                     s.unread_sms = (num(&c["sms_dev_unread_num"]).unwrap_or(0.0) + num(&c["sms_sim_unread_num"]).unwrap_or(0.0)) as u32;
                 }));
@@ -420,6 +467,17 @@ fn run(status: Arc<Mutex<Status>>) {
                     } else {
                         "远程·转发".into()
                     };
+                }));
+            }
+        }
+
+        if SMS_REFRESH.swap(false, Ordering::Relaxed) {
+            let body = serde_json::json!({"page": 0, "data_per_page": 300, "mem_store": 2, "tags": 10, "order_by": "order by id desc"});
+            if let Some(v) = api.send("POST", "/api/sms/list", body) {
+                let list = parse_sms(&v);
+                update.push(Box::new(move |s: &mut Status| {
+                    s.sms = list;
+                    s.sms_loaded = true;
                 }));
             }
         }
@@ -458,5 +516,27 @@ fn run(status: Arc<Mutex<Status>>) {
         }
         tick += 1;
         std::thread::sleep(Duration::from_secs(1).saturating_sub(started.elapsed()));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_router_sms() {
+        let v = serde_json::json!({"messages": [
+            {"id": 83, "number": "10086", "content": "4F60597D002000F0009F00980080", "date": "26,11,11,18,29,00,+32", "tag": "1"},
+            {"id": 90, "number": "+61412345678", "content": "00480069D83DDE00", "date": "26,11,12,09,05,00,+44", "tag": "2"},
+            {"id": 91, "number": "x", "content": "", "date": "", "tag": "4"}
+        ]});
+        let list = parse_sms(&v);
+        assert_eq!(list.len(), 2, "drafts are left out");
+        assert_eq!(list[0].id, 90, "newest first");
+        assert_eq!(list[0].text, "Hi😀");
+        assert!(!list[0].incoming && !list[0].unread);
+        assert_eq!(list[1].time, "11-11 18:29");
+        assert!(list[1].incoming && list[1].unread);
+        assert!(list[1].text.starts_with("你好"));
     }
 }

@@ -147,6 +147,16 @@ pub fn run(action: Action, status: Arc<Mutex<Status>>) {
                 String::new()
             }
             Action::Hangup => result(api.send("POST", "/api/call/hangup", json!({})), "已挂断", "挂断失败"),
+            Action::SmsMarkRead(ids) => {
+                let id = ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(";") + ";";
+                if api.send("POST", "/api/sms/read", json!({"id": id, "tag": 0})).is_some() {
+                    let mut s = status.lock().unwrap();
+                    for m in s.sms.iter_mut().filter(|m| ids.contains(&m.id)) {
+                        m.unread = false;
+                    }
+                }
+                String::new()
+            }
             Action::TzAuto(on) => {
                 // Turning automatic off starts from the offset shown now.
                 let body = if on {

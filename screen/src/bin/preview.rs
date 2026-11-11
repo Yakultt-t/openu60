@@ -14,6 +14,9 @@ fn main() {
     let pages: Vec<(&str, Box<dyn Fn(&mut Canvas)>)> = vec![
         ("1-cover", Box::new(|c: &mut Canvas| pages::cover::draw(c, &s))),
         ("2-network", Box::new(|c: &mut Canvas| pages::network::draw(c, &s, 0, 5))),
+        ("2b-sms", Box::new(|c: &mut Canvas| { pages::sms::draw(c, &s, None, 0, 1, 7); })),
+        ("2c-sms-thread", Box::new(|c: &mut Canvas| { pages::sms::draw(c, &s, Some(pages::Sub::Sms(pages::sms::thread_key("+61 412 345 678"))), 0, 1, 7); })),
+        ("2d-sms-long", Box::new(|c: &mut Canvas| { pages::sms::draw(c, &s, Some(pages::Sub::Sms(pages::sms::thread_key("10086"))), 0, 1, 7); })),
         ("3-wifi", Box::new(|c: &mut Canvas| { pages::wifi::draw(c, &s, 1, 5); })),
         ("4-charge", Box::new(|c: &mut Canvas| { pages::charge::draw(c, &s, 2, 5); })),
         ("5-adblock", Box::new(|c: &mut Canvas| { pages::adblock::draw(c, &s, 3, 6); })),

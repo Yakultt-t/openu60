@@ -22,6 +22,7 @@ pub fn draw(c: &mut Canvas, s: &Status, set: &Settings, sub: Option<Sub>, page: 
         Some(Sub::Display) => display(c, set),
         Some(Sub::Advanced) => advanced(c, s),
         Some(Sub::Time) => time(c, s),
+        Some(Sub::Sms(_)) => home(c, s, set),
     };
     if sub.is_none() {
         c.page_dots(160.0, 466.0, pages, page);
