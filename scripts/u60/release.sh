@@ -95,12 +95,14 @@ installer() { # payload-dir target name
     cp "$INST/target-$(basename "$1")/$2/release/openu60-installer$ext" "$OUT/installer/$3$ext"
 }
 payload public "$OUT/payload-public"
-installer "$OUT/payload-public" x86_64-pc-windows-gnu OpenU60-Installer-Windows-x64
+# 32-bit x86: runs on 32- and 64-bit Windows 10/11 and on Windows on ARM (x86 emulation),
+# like the adb.exe it downloads. A 64-bit-only exe shows "This app can't run on your PC" there.
+installer "$OUT/payload-public" i686-pc-windows-gnu OpenU60-Installer-Windows
 installer "$OUT/payload-public" aarch64-apple-darwin OpenU60-Installer-macOS-arm64
 installer "$OUT/payload-public" x86_64-unknown-linux-musl OpenU60-Installer-Linux-x64
 if [[ " $CHANNELS " == *" relay "* ]]; then
     payload relay "$OUT/payload-relay"
-    installer "$OUT/payload-relay" x86_64-pc-windows-gnu OpenU60-Installer-Windows-x64-relay
+    installer "$OUT/payload-relay" i686-pc-windows-gnu OpenU60-Installer-Windows-relay
 fi
 for f in "$OUT/installer"/*; do
     if strings -n 6 "$f" | grep -q -E "/Users/|/home/[a-z]"; then echo "build path left in $f"; exit 1; fi

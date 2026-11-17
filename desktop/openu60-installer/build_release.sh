@@ -30,7 +30,7 @@ build() { # target, output name
     cp "target/$1/release/openu60-installer$ext" "$DIST/$2$ext"
 }
 echo "== installers"
-build x86_64-pc-windows-gnu OpenU60-Installer-Windows-x64
+build i686-pc-windows-gnu OpenU60-Installer-Windows  # 32-bit: runs on every Windows 10/11, incl. ARM
 build aarch64-apple-darwin OpenU60-Installer-macOS-arm64
 build x86_64-unknown-linux-musl OpenU60-Installer-Linux-x64
 
