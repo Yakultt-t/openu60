@@ -11,7 +11,6 @@
 
 ```
 /etc/rc.local
- ├─ (sleep 15; ubus call zwrt_bsp.usb set '{"mode":"debug"}') &    开机后重新打开 ADB
  ├─ sh /data/local/tmp/start_zte_agent.sh                           导出密码和推送配置
  │    └─ start-stop-daemon -S -b -x /data/local/tmp/zte-agent-run.sh 守护进程（新会话）
  │         └─ /data/zte-agent >> /tmp/zte-agent.log
@@ -89,7 +88,7 @@ adb shell "ls -la /zteoverlay/etc-upper_a/rc.d/ | grep '^c'"         # init.d di
 
 ## 重启后的恢复
 
-实测重启后，下面这些都会自己恢复：ADB、agent 及其守护进程、IMS（由 `ims_guard` 打开）、Wi-Fi 上行（`rc.local` 在 45 秒时恢复，之后由 `wifi-uplink-guard` 兜底，卡住超过约 5 分钟会被杀掉重来）、中继注册、触摸屏程序的后台监听。
+实测重启后，下面这些都会自己恢复：agent 及其守护进程、IMS（由 `ims_guard` 打开）、Wi-Fi 上行（`rc.local` 在 45 秒时恢复，之后由 `wifi-uplink-guard` 兜底，卡住超过约 5 分钟会被杀掉重来）、中继注册、触摸屏程序的后台监听。
 
 - Wi-Fi 子系统在开机后可能要两分钟左右才完全就绪。
 - QRTR 服务的端口每次开机都会变（同一台机器上 WMS 就出现过 92 和 87），代码和手工命令都必须先用 `qrtr-lookup` 查，不能写死。
@@ -146,4 +145,5 @@ adb shell 'sh /data/local/tmp/wifi_uplink.sh mode hotspot'
 - 不要写死 QRTR 的节点或端口。
 - 不要只执行 `killall zte-agent` 就以为 agent 已经停了。
 - 不要重新打开固件升级：一次 FOTA 升级就可能清掉 agent 和 ADB。
+- 开机不再自动打开 ADB。调试模式（`zwrt_bsp.usb set {"mode":"debug"}`）在固件里存成 `factory`，USB 口换成工厂调试用的接口组合，没有 iPhone 能用的 ECM 网卡，iPhone 的 USB 共享网络会失效。正常模式是 `user`。旧版本在 `rc.local` 里加的那行，新版安装、更新和卸载时都会删掉；安装器的「7. 关闭调试模式」会删掉这行并切回 `user`。
 - 不要用 `init.d disable` 停用原厂屏幕程序 `zte_topsw_devui`：它在开机同步列表里，只能运行时临时 stop/start。

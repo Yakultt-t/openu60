@@ -86,8 +86,8 @@ OpenU60 让中国手机卡常驻在中兴 U60 Pro 里。路由器上运行一个
 
 | 系统 | 文件 |
 |---|---|
-| Windows 10/11（64 位），想在外面也能用手机连路由器 | `OpenU60-Installer-Windows-x64-relay.exe`（带作者的中继，见下） |
-| Windows 10/11（64 位），只在家里用或自建中继 | `OpenU60-Installer-Windows-x64.exe` |
+| Windows 10/11，想在外面也能用手机连路由器 | `OpenU60-Installer-Windows-relay.exe`（带作者的中继，见下） |
+| Windows 10/11，只在家里用或自建中继 | `OpenU60-Installer-Windows.exe` |
 | Mac（Apple 芯片） | `OpenU60-Installer-macOS-arm64` |
 | Linux（x86-64） | `OpenU60-Installer-Linux-x64` |
 
@@ -96,8 +96,9 @@ OpenU60 让中国手机卡常驻在中兴 U60 Pro 里。路由器上运行一个
 1. **开启 USB 调试**：USB 线连好路由器，电脑连上路由器的 Wi-Fi，输入路由器后台密码。
 2. **备份路由器配置**：几秒钟，保存在用户文件夹的 `OpenU60-备份` 里。
 3. **完整备份**（可选）：把整块存储读出来（约 7.6 GB，半小时左右），每一块都校验。
-4. **安装 / 更新**：装好后会显示一次 **SIM 随行密码**，抄下来，手机 App 配对时要用。
+4. **安装 / 更新**：装好后会显示一次 **SIM 随行密码**，抄下来，手机 App 配对时要用。最后会问要不要关闭调试模式，选是。
 5. 查看状态、6. 卸载。
+7. **关闭调试模式**：开启 USB 调试其实是把 USB 口切到中兴的工厂模式，这时 USB 共享网络用不了，iPhone 也没法用 USB 线上网。这一步切回正常模式，并删掉旧版本留下的「开机自动开调试」。以后要更新或卸载，先做第 1 步。
 
 **Windows 第一次用要注意两件事：**
 
@@ -110,7 +111,7 @@ OpenU60 让中国手机卡常驻在中兴 U60 Pro 里。路由器上运行一个
 
 **已经装了 UFI-TOOLS？** 不用电脑：导入 [UFI 插件](desktop/ufi-plugin/)，在 UFI-TOOLS 网页里就能安装、在线更新或卸载。
 
-也可以不进菜单，直接带参数运行：`enable-adb`、`status`、`backup [目录]`、`backup-full [目录]`、`install [--new-password]`、`uninstall`。源码在 [`desktop/openu60-installer/`](desktop/openu60-installer/)，`build_release.sh` 可以自己构建同样的文件。
+也可以不进菜单，直接带参数运行：`enable-adb`、`status`、`backup [目录]`、`backup-full [目录]`、`install [--new-password]`、`uninstall`、`usb-normal [路由器地址]`。源码在 [`desktop/openu60-installer/`](desktop/openu60-installer/)，`build_release.sh` 可以自己构建同样的文件。
 
 **两个 Windows 版本的区别只有远程访问：**
 

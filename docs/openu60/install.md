@@ -141,7 +141,7 @@ scripts/u60/04_deploy_agent.sh target/aarch64-unknown-linux-musl/release/zte-age
 2. 先让守护进程退出（`/tmp/zte-agent.stop`），停掉旧 agent，清理占着 :9090 的 `ubus listen` 子进程，再推送二进制到 `/data/zte-agent`。
 3. **第一次运行时生成 24 位随机的 agent 密码**（即 U60 助手密码），写进 `$U60_HOME/agent-credentials.txt`（权限 600），从不打印；以后再部署会沿用这个密码。密码另外只存在路由器上的启动脚本 `/data/local/tmp/start_zte_agent.sh` 里（0700）。已经装好的推送配置会保留。
 4. 推送守护进程 `zte-agent-run.sh` 和 Wi-Fi 上行脚本。
-5. 在 `/etc/rc.local` 里加三个开机钩子（重复运行不会重复添加）：开机 15 秒后重新开启 ADB；启动 agent；开机 45 秒后恢复 Wi-Fi 上行。并关闭中兴固件自带的每周定时重启（`zwrt_zte_mc.reboot_schedule`，见 [router-runtime.md](router-runtime.md#关闭的厂商服务)）。
+5. 在 `/etc/rc.local` 里加两个开机钩子（重复运行不会重复添加）：启动 agent；开机 45 秒后恢复 Wi-Fi 上行。旧版本加过的「开机 15 秒后开启 ADB」那行会被删掉：调试模式就是工厂模式，会让 iPhone 的 USB 共享网络失效。并关闭中兴固件自带的每周定时重启（`zwrt_zte_mc.reboot_schedule`，见 [router-runtime.md](router-runtime.md#关闭的厂商服务)）。
 6. 启动 agent，通过 `adb forward tcp:19090 tcp:9090` 用生成的密码登录验证，打印 `/api/device`。
 
 04 只部署 agent，不装触摸屏程序。想要触摸屏界面，再手动推上去（agent 每分钟检查一次，看到文件就会拉起，不用重启）：
@@ -207,7 +207,8 @@ api GET /api/device | jq .
 
 ## 6. 卸载与还原
 
-- 卸载 agent：用助手的“卸载…”，或执行 `desktop/U60Toolkit/Resources/payload/u60.sh uninstall`。开机 15 秒后开启 ADB 的那行钩子仍会留在 `/etc/rc.local` 里，不需要时手动删掉。
+- 卸载 agent：用助手的“卸载…”，或执行 `desktop/U60Toolkit/Resources/payload/u60.sh uninstall`。旧版本留下的「开机开启 ADB」钩子会一起删掉。
+- 关闭调试模式、恢复 USB 共享网络：Windows / Linux 安装器菜单选「7. 关闭调试模式」；或在 adb shell 里执行 `sed -i '/zwrt_bsp.usb set/d' /etc/rc.local; ubus call zwrt_bsp.usb set '{"mode":"user"}'`（执行后 ADB 会断开）。
 - 恢复中兴固件升级和云服务（恢复后固件升级会重新生效，一次升级就可能清掉 agent 和 ADB）：
 
 ```bash

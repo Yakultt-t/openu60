@@ -116,7 +116,9 @@ stop_agent() {
 }
 
 boot_hooks() {
-    grep -q "zwrt_bsp.usb set" /etc/rc.local || sed -i "/^exit 0/i (sleep 15; ubus call zwrt_bsp.usb set '{\"mode\":\"debug\"}') &" /etc/rc.local
+    # Older versions switched USB to debug (factory) mode at every boot, which breaks USB
+    # tethering to an iPhone. Installing from the router itself never needs ADB.
+    sed -i "/zwrt_bsp.usb set/d" /etc/rc.local
     grep -q "start_zte_agent.sh" /etc/rc.local || sed -i "/^exit 0/i sh /data/local/tmp/start_zte_agent.sh" /etc/rc.local
     grep -q "wifi_uplink.sh restore" /etc/rc.local || sed -i "/^exit 0/i (sleep 45; sh /data/local/tmp/wifi_uplink.sh restore) >/dev/null 2>&1 &" /etc/rc.local
     uci -q get zwrt_zte_mc.reboot_schedule >/dev/null && { uci set zwrt_zte_mc.reboot_schedule.reboot_schedule_enable=0; uci commit zwrt_zte_mc; }
@@ -221,7 +223,7 @@ EOF
 
 cmd_uninstall() {
     stop_agent
-    sed -i "/start_zte_agent.sh/d; /wifi_uplink.sh restore/d" /etc/rc.local
+    sed -i "/start_zte_agent.sh/d; /wifi_uplink.sh restore/d; /zwrt_bsp.usb set/d" /etc/rc.local
     sh /data/local/tmp/wifi_uplink.sh mode hotspot >/dev/null 2>&1
     for d in /proc/[0-9]*; do
         c=$(tr '\0' ' ' < $d/cmdline 2>/dev/null)

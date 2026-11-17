@@ -8,6 +8,7 @@
 //!   openu60-installer backup-full [dir]
 //!   openu60-installer install [--new-password]
 //!   openu60-installer uninstall
+//!   openu60-installer usb-normal [gateway]   leave debug mode (USB network sharing works again)
 
 mod adb;
 mod backup;
@@ -39,8 +40,9 @@ fn main() {
         "backup-full" => with_adb(|a| backup::full(&a, args.get(1).map(String::as_str))),
         "install" => with_adb(|a| install(&a, args.iter().any(|x| x == "--new-password"), false)),
         "uninstall" => with_adb(|a| uninstall(&a, false)),
+        "usb-normal" => usb_normal(args.get(1).map(String::as_str)),
         "-h" | "--help" | "help" => {
-            println!("用法：openu60-installer [enable-adb [路由器地址] | status | backup [目录] | backup-full [目录] | install [--new-password] | uninstall]");
+            println!("用法：openu60-installer [enable-adb [路由器地址] | status | backup [目录] | backup-full [目录] | install [--new-password] | uninstall | usb-normal [路由器地址]]");
             Ok(())
         }
         other => Err(format!("不认识的命令：{other}（用 --help 看用法）")),
@@ -61,6 +63,7 @@ fn menu() {
         println!("  4. 安装 / 更新 OpenU60");
         println!("  5. 查看状态");
         println!("  6. 卸载 OpenU60");
+        println!("  7. 关闭调试模式（恢复 USB 共享网络，iPhone 用 USB 线上网要用）");
         println!("  0. 退出");
         let choice = ui::prompt("请输入数字后回车：");
         let r = match choice.as_str() {
@@ -70,9 +73,10 @@ fn menu() {
             "4" => with_adb(|a| install(&a, false, true)),
             "5" => with_adb(|a| status(&a)),
             "6" => with_adb(|a| uninstall(&a, true)),
+            "7" => usb_normal(None),
             "0" | "q" | "" => return,
             _ => {
-                ui::warn("请输入 0–6 之间的数字");
+                ui::warn("请输入 0–7 之间的数字");
                 continue;
             }
         };
@@ -183,6 +187,14 @@ fn driver_help() {
     }
     let name = adb_iface.and_then(|l| l.split('|').nth(2)).filter(|n| !n.trim().is_empty()).unwrap_or("ADB Interface");
     ui::warn("Windows 还没有给路由器的 ADB 接口装驱动（只需要装一次）。");
+    // This 32-bit program sees "x86" in PROCESSOR_ARCHITECTURE; the real CPU is in ...W6432.
+    let arm = ["PROCESSOR_ARCHITEW6432", "PROCESSOR_ARCHITECTURE"]
+        .iter()
+        .any(|k| std::env::var(k).is_ok_and(|v| v.eq_ignore_ascii_case("ARM64")));
+    if arm {
+        ui::warn("这台电脑是 ARM 芯片（比如骁龙笔记本）。Google 的 USB 驱动没有 ARM 版本，下面的步骤很可能装不上。");
+        ui::warn("装不上的话：换一台普通的 Intel/AMD 电脑，或者在路由器的 UFI-TOOLS 里用「SIM 随行」插件安装（不需要电脑）。");
+    }
     if !ui::confirm("现在从 Google 官网下载官方 USB 驱动吗？", true) {
         return;
     }
@@ -316,6 +328,48 @@ fn install(a: &Adb, force_new: bool, interactive: bool) -> Res {
         println!("请抄下来保存：它只显示这一次，只存在路由器上。");
         println!("下一步：iPhone 打开「SIM 随行」，按引导连上路由器的 Wi-Fi，输入这个密码完成配对。");
     }
+    if interactive {
+        println!();
+        ui::info("路由器的 USB 口现在还在调试（工厂）模式：USB 共享网络用不了，iPhone 也没法用 USB 线上网。");
+        if ui::confirm("现在关闭调试模式吗？（以后要更新或卸载时，再做一次第 1 步就行）", true) {
+            usb_normal_adb(a)?;
+        }
+    }
+    Ok(())
+}
+
+/// Leaves debug mode: back to the firmware's normal USB mode, where USB network sharing
+/// (computers, iPhone USB tethering) works. Debug mode is the factory composition (stored as
+/// "factory").
+fn usb_normal(gateway: Option<&str>) -> Res {
+    if let Some(a) = adb::find().filter(|a| a.connected() && a.devices().len() == 1) {
+        return usb_normal_adb(&a);
+    }
+    println!("\n电脑没连上路由器的 ADB，改用路由器网页后台切换 USB 模式。");
+    println!("要求：电脑连着路由器的 Wi-Fi。");
+    let gw = match gateway {
+        Some(g) => g.to_string(),
+        None => ui::prompt_default("路由器地址", "192.168.0.1"),
+    };
+    let pw = ui::secret("路由器后台密码（输入时不显示，只用这一次，不会保存）：");
+    if pw.is_empty() {
+        return Err("没有输入密码".into());
+    }
+    web::set_usb_mode(&gw, &pw, "user")?;
+    drop(pw);
+    ui::ok("已切回正常模式，USB 共享网络可以用了。");
+    ui::warn("如果之前用旧版本装过 OpenU60，路由器重启后可能又会自动进调试模式。");
+    ui::warn("要彻底去掉：先做第 1 步开启调试，再做一次第 7 步（或者用这个新版本重新安装一次）。");
+    Ok(())
+}
+
+fn usb_normal_adb(a: &Adb) -> Res {
+    push_helper(a)?;
+    if !a.helper("usb-normal").stdout.contains("ok") {
+        return Err("切换 USB 模式失败".into());
+    }
+    ui::ok("几秒后 USB 口会切回正常模式：USB 共享网络恢复，ADB 会断开（这是正常的）。");
+    ui::info("开机也不会再自动进调试模式。以后要更新或卸载 OpenU60，先做第 1 步。");
     Ok(())
 }
 

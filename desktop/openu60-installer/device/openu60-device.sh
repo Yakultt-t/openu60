@@ -84,13 +84,26 @@ cmd_place_files() {
 }
 
 cmd_boot_hooks() {
-    grep -q "zwrt_bsp.usb set" /etc/rc.local || sed -i "/^exit 0/i (sleep 15; ubus call zwrt_bsp.usb set '{\"mode\":\"debug\"}') &" /etc/rc.local
+    # Older versions switched USB to debug mode at every boot. Debug is the firmware's factory
+    # composition (stored as "factory") and drops the ECM network an iPhone uses for USB
+    # tethering, so it is no longer kept on: the installer turns ADB on when it needs it.
+    sed -i "/zwrt_bsp.usb set/d" /etc/rc.local
     grep -q "start_zte_agent.sh" /etc/rc.local || sed -i "/^exit 0/i sh /data/local/tmp/start_zte_agent.sh" /etc/rc.local
     grep -q "wifi_uplink.sh restore" /etc/rc.local || sed -i "/^exit 0/i (sleep 45; sh /data/local/tmp/wifi_uplink.sh restore) >/dev/null 2>&1 &" /etc/rc.local
     # The firmware weekly reboot runs on UTC (the router time zone), so it can land in the
     # middle of the day elsewhere; the agent supervisor and guards make it unnecessary.
     uci -q get zwrt_zte_mc.reboot_schedule >/dev/null && { uci set zwrt_zte_mc.reboot_schedule.reboot_schedule_enable=0; uci commit zwrt_zte_mc; }
     grep -q "start_zte_agent.sh" /etc/rc.local && echo ok
+}
+
+# Back to the firmware's normal USB mode ("user": network sharing for computers and iPhones)
+# and drop the boot-time switch to debug mode. ADB goes away with it, so the switch runs
+# detached a moment after this command has answered.
+cmd_usb_normal() {
+    sed -i "/zwrt_bsp.usb set/d" /etc/rc.local
+    # setsid: a new session, so the switch survives adbd (and this shell) going away.
+    setsid sh -c "sleep 2; ubus call zwrt_bsp.usb set '{\"mode\":\"user\"}'" </dev/null >/dev/null 2>&1 &
+    echo ok
 }
 
 cmd_start() {
@@ -101,7 +114,7 @@ cmd_start() {
 
 cmd_uninstall() {
     cmd_stop_agent >/dev/null
-    sed -i "/start_zte_agent.sh/d; /wifi_uplink.sh restore/d" /etc/rc.local
+    sed -i "/start_zte_agent.sh/d; /wifi_uplink.sh restore/d; /zwrt_bsp.usb set/d" /etc/rc.local
     sh /data/local/tmp/wifi_uplink.sh mode hotspot >/dev/null 2>&1
     for d in /proc/[0-9]*; do
         c=$(tr "\0" " " < $d/cmdline 2>/dev/null)
@@ -122,9 +135,10 @@ case "${1:-}" in
     boot-hooks) cmd_boot_hooks ;;
     start) cmd_start ;;
     uninstall) cmd_uninstall ;;
+    usb-normal) cmd_usb_normal ;;
     log) tail -20 /tmp/zte-agent.log 2>/dev/null ;;
     # The installer keeps an existing password on updates so paired phones stay signed in;
     # it needs it once to check that the new agent answers.
     password) sed -n "s/^export ZTE_AGENT_PASSWORD='\(.*\)'$/\1/p" /data/local/tmp/start_zte_agent.sh 2>/dev/null ;;
-    *) echo "usage: $0 status|identity|disable-cloud|stop-agent|place-files|boot-hooks|start|uninstall|log|password"; exit 2 ;;
+    *) echo "usage: $0 status|identity|disable-cloud|stop-agent|place-files|boot-hooks|start|uninstall|usb-normal|log|password"; exit 2 ;;
 esac

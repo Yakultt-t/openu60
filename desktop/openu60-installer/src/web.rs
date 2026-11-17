@@ -1,6 +1,7 @@
-//! The router's own web admin (ubus over JSON-RPC at http://<gateway>/ubus/). Used once, to
-//! switch the USB port to debug mode so ADB appears. Same login as the web page: SHA-256 of
-//! the password, then SHA-256 again with the router's salt (uppercase hex). Never stored.
+//! The router's own web admin (ubus over JSON-RPC at http://<gateway>/ubus/). Used to switch
+//! the USB port to debug mode so ADB appears, and back to normal mode afterwards. Same login
+//! as the web page: SHA-256 of the password, then SHA-256 again with the router's salt
+//! (uppercase hex). Never stored.
 
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -46,6 +47,12 @@ fn call(a: &ureq::Agent, gw: &str, session: &str, object: &str, method: &str, pa
 }
 
 pub fn enable_debug_mode(gw: &str, password: &str) -> Result<(), String> {
+    set_usb_mode(gw, password, "debug")
+}
+
+/// Switches the USB port: "debug" (the factory composition with ADB; no network sharing for
+/// an iPhone) or "user" (the firmware's normal mode: network sharing for computers and iPhones).
+pub fn set_usb_mode(gw: &str, password: &str, mode: &str) -> Result<(), String> {
     let a = agent();
     let info = call(&a, gw, ANON, "zwrt_web", "web_login_info", json!({"": ""}))?;
     let salt = info.get("zte_web_sault").and_then(|s| s.as_str()).filter(|s| !s.is_empty()).ok_or_else(|| {
@@ -59,7 +66,7 @@ pub fn enable_debug_mode(gw: &str, password: &str) -> Result<(), String> {
         .and_then(|s| s.as_str())
         .filter(|s| !s.is_empty())
         .ok_or("后台密码不对，或者登录次数太多被暂时锁定了。")?;
-    call(&a, gw, session, "zwrt_bsp.usb", "set", json!({"mode": "debug"}))?;
+    call(&a, gw, session, "zwrt_bsp.usb", "set", json!({"mode": mode}))?;
     Ok(())
 }
 
