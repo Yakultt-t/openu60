@@ -115,6 +115,46 @@ function parseCaSig(sig: string) {
   return out
 }
 
+/** NR 信道带宽（TS 38.101），单位 MHz */
+const NR_CHANNEL_BW = new Set([5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 60, 70, 80, 90, 100, 200, 400])
+
+/** 带宽字段（"100" 或 "100MHz"）；不是合法 NR 信道带宽（比如固件给的是编号）时返回空串 */
+function nrChannelBandwidth(raw: string): string {
+  const v = Number(raw.toUpperCase().replace('MHZ', '').trim())
+  return Number.isInteger(v) && NR_CHANNEL_BW.has(v) ? String(v) : ''
+}
+
+/** 0 是固件的“未测到” */
+function nonZero(v: number | null): number | null {
+  return v === 0 ? null : v
+}
+
+/**
+ * U60 Pro 固件自己的 nrca 格式，每条一个辅载波：
+ * "SCC 序号, PCI, 状态, 频段, NR-ARFCN, 带宽, 上行, RSRP, RSRQ, SINR, RSSI"。
+ * 只列辅载波，信号就在条目里（nrcasig 为空）。有任何一条不足 11 段就返回 null，改走旧的 5 段格式。
+ */
+function parseNrSecondaries(ca: string): Carrier[] | null {
+  const out: Carrier[] = []
+  for (const entry of ca.split(';')) {
+    if (!entry.trim()) continue
+    const p = entry.split(',').map((x) => x.trim())
+    if (p.length < 11) return null
+    out.push({
+      label: `5G SCC${out.length}`,
+      pci: p[1],
+      band: p[3],
+      earfcn: p[4],
+      bandwidth: nrChannelBandwidth(p[5]),
+      rsrp: nonZero(parseDouble(p[7])),
+      rsrq: nonZero(parseDouble(p[8])),
+      sinr: parseDouble(p[9]),
+      rssi: nonZero(parseDouble(p[10])),
+    })
+  }
+  return out.length ? out : null
+}
+
 function buildScc(
   ca: string,
   casig: string,
@@ -153,7 +193,10 @@ export function parseSignal(data: any): ParsedSignal {
   const d = data ?? {}
 
   const nrRaw = parseDouble(d.nr5g_rsrp)
-  const nrScc = buildScc(str(d.nrca), str(d.nrcasig), str(d.nr5g_pci), str(d.nr5g_action_channel), '5G SCC')
+  const nrDetailed = parseNrSecondaries(str(d.nrca))
+  const nrScc = nrDetailed
+    ? { scc: nrDetailed, pccBandwidth: '' }
+    : buildScc(str(d.nrca), str(d.nrcasig), str(d.nr5g_pci), str(d.nr5g_action_channel), '5G SCC')
   const nr: NRSignal = {
     rsrp: nrRaw === 0 ? null : nrRaw,
     rsrq: parseDouble(d.nr5g_rsrq),
