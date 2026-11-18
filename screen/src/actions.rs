@@ -117,6 +117,24 @@ pub fn run(action: Action, status: Arc<Mutex<Status>>) {
                 if r.is_some() { status.lock().unwrap().powerbank = on; }
                 result(r, if on { "已打开反向供电" } else { "已关闭反向供电" }, "设置失败")
             }
+            Action::UsbPromptClose => {
+                status.lock().unwrap().usb_prompt = None;
+                String::new()
+            }
+            Action::UsbMode(mode) => {
+                let r = api.send("PUT", "/api/usb/mode", json!({"mode": mode}));
+                {
+                    let mut st = status.lock().unwrap();
+                    st.usb_prompt = None;
+                    if r.is_some() { st.usb_mode = mode.clone(); }
+                }
+                let done = match mode.as_str() {
+                    "debug" => "已切到调试模式（ADB），USB 共享网络暂停",
+                    "charging" => "已切到仅充电",
+                    _ => "已切到网络共享（正常模式）",
+                };
+                result(r, done, "切换失败")
+            }
             Action::AdblockToggle => {
                 let on = !snapshot.adblock.enabled;
                 let r = api.send("PUT", "/api/adblock/config", json!({"enabled": on}));

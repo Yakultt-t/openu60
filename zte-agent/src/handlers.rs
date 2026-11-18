@@ -49,6 +49,7 @@ pub struct AppState {
     /// A voice call is (believed to be) in progress; set by the telephony
     /// handlers, re-checked with `AT+CLCC` by the policies' busy guard.
     pub call_active: std::sync::atomic::AtomicBool,
+    pub voice_unlock: crate::voice_unlock::VoiceUnlock,
     /// Unix seconds of the last USSD prompt that still needs a reply (0 = none).
     pub ussd_prompt_at: std::sync::atomic::AtomicU64,
 }
@@ -82,6 +83,7 @@ impl AppState {
             call_monitor: Arc::new(crate::call_monitor::CallMonitor::new()),
             last_status_poll: std::sync::atomic::AtomicU64::new(0),
             call_active: std::sync::atomic::AtomicBool::new(false),
+            voice_unlock: crate::voice_unlock::VoiceUnlock::default(),
             ussd_prompt_at: std::sync::atomic::AtomicU64::new(0),
         }
     }

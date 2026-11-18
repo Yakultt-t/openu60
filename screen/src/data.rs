@@ -139,7 +139,7 @@ fn sms_time(date: &str) -> String {
 }
 
 fn parse_sms(v: &Value) -> Vec<crate::model::Sms> {
-    let mut out: Vec<crate::model::Sms> = v["messages"]
+    let mut out: Vec<(String, crate::model::Sms)> = v["messages"]
         .as_array()
         .map(|a| a.iter().filter_map(|m| {
             let id = m["id"].as_i64().or_else(|| m["id"].as_str().and_then(|s| s.parse().ok()))?;
@@ -149,18 +149,22 @@ fn parse_sms(v: &Value) -> Vec<crate::model::Sms> {
             }
             let raw = m["content"].as_str().unwrap_or("");
             let text = decode_ucs2(raw);
-            Some(crate::model::Sms {
+            // "YY,MM,DD,HH,MM,SS,TZ": the first 17 characters sort by time. Archived messages
+            // (moved off the full modem store by the agent) have large ids, so ids alone
+            // would put them first.
+            let key: String = m["date"].as_str().unwrap_or("").chars().take(17).collect();
+            Some((key, crate::model::Sms {
                 id,
                 number: m["number"].as_str().unwrap_or("").to_string(),
                 text: if text.trim().is_empty() { raw.to_string() } else { text },
                 time: sms_time(m["date"].as_str().unwrap_or("")),
                 incoming: tag == "0" || tag == "1",
                 unread: tag == "1",
-            })
+            }))
         }).collect())
         .unwrap_or_default();
-    out.sort_by(|a, b| b.id.cmp(&a.id));
-    out
+    out.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.id.cmp(&a.1.id)));
+    out.into_iter().map(|(_, m)| m).collect()
 }
 
 /// The modem's own rate for the data bearer, in bits per second (down, up).
@@ -286,6 +290,24 @@ fn run(status: Arc<Mutex<Status>>) {
                 });
             }));
         }
+        // USB every 2 s, so the plug-in prompt shows up right after the cable goes in.
+        if tick % 2 == 0 {
+            if let Some(u) = api.get("/api/usb/status") {
+                update.push(Box::new(move |s: &mut Status| {
+                    if let Some(m) = u["mode"].as_str() {
+                        s.usb_mode = if m == "factory" { "debug".into() } else { m.to_string() };
+                    }
+                    let cc = u["typec_cc"].as_str().unwrap_or("");
+                    let cable = !cc.is_empty() && cc != "no_cc";
+                    if s.usb_cable == Some(false) && cable {
+                        s.usb_prompt = Some(Instant::now());
+                    } else if !cable {
+                        s.usb_prompt = None;
+                    }
+                    s.usb_cable = Some(cable);
+                }));
+            }
+        }
         if tick % 5 == 0 {
             if let Some(sig) = api.get("/api/network/signal") {
                 if let Some(h) = num(&sig["nitz_timezone"]) {
@@ -326,6 +348,22 @@ fn run(status: Arc<Mutex<Status>>) {
                     if !ca.is_empty() {
                         s.band = ca.iter().map(|c| c.0.as_str()).collect::<Vec<_>>().join("+");
                         s.bandwidth_mhz = ca.iter().map(|c| c.1).sum();
+                    }
+                    // 5G: primary NR band plus the secondaries in nrca. NR carrier aggregation
+                    // is what carriers sell as 5G-A.
+                    if s.net_type == "5G" {
+                        let pcc_band = sig["nr5g_action_band"].as_str().unwrap_or("").trim().trim_start_matches(['n', 'N']).to_string();
+                        let pcc_bw = num(&sig["nr5g_bandwidth"]).unwrap_or(0.0) as f32;
+                        let sccs = crate::model::nr_secondaries(sig["nrca"].as_str().unwrap_or(""));
+                        if !pcc_band.is_empty() {
+                            let mut bands = vec![format!("n{pcc_band}")];
+                            bands.extend(sccs.iter().map(|(b, _)| format!("n{b}")));
+                            s.band = bands.join("+");
+                            s.bandwidth_mhz = pcc_bw + sccs.iter().map(|(_, bw)| *bw).sum::<f32>();
+                        }
+                        if !sccs.is_empty() {
+                            s.net_type = "5G-A".into();
+                        }
                     }
                 }));
             }

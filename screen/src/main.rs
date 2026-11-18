@@ -214,6 +214,7 @@ struct App<'f> {
     drag: (f32, f32),
     anim: Option<Anim>,
     last_call: bool,
+    last_usb_prompt: Option<Instant>,
     last_unread: u32,
     /// 短信 page: list page, and messages skipped from the newest in a conversation.
     sms_page: usize,
@@ -301,6 +302,8 @@ impl<'f> App<'f> {
         self.overlay_hits.clear();
         if let Some(call) = &s.call {
             self.overlay_hits = pages::call::draw(&mut c, call);
+        } else if s.usb_prompt.is_some_and(|t| t.elapsed() < pages::usb::PROMPT_FOR) {
+            self.overlay_hits = pages::usb::draw(&mut c, &s);
         }
         if let Some((text, at)) = &s.toast {
             if at.elapsed() < Duration::from_secs(4) {
@@ -635,7 +638,7 @@ fn run() -> i32 {
         fonts: &fonts, wall, wall_key: (settings.theme.clone(), settings::mtime(&custom)), status, settings,
         settings_mtime: settings::mtime(&settings::path()), view: View::Cover, page: 0, sub: None, menu: Menu::None,
         awake: true, last_input: Instant::now(), hits: Hits::new(), overlay_hits: Hits::new(),
-        menu_hits: Vec::new(), touch_start: None, drag: (0.0, 0.0), anim: None, last_call: false, last_unread: u32::MAX, sms_page: 0, sms_skip: 0,
+        menu_hits: Vec::new(), touch_start: None, drag: (0.0, 0.0), anim: None, last_call: false, last_usb_prompt: None, last_unread: u32::MAX, sms_page: 0, sms_skip: 0,
         presses: Presses { times: Vec::new() }, exit: None,
     };
     let first = app.frame();
@@ -707,6 +710,16 @@ fn run() -> i32 {
             app.last_unread = unread;
         } else {
             app.last_unread = unread;
+        }
+        let usb_prompt = app.status.lock().unwrap().usb_prompt;
+        if let Some(t) = usb_prompt {
+            if app.last_usb_prompt != Some(t) {
+                app.last_usb_prompt = Some(t);
+                if !app.awake { app.wake(); }
+                dirty = true;
+            } else if t.elapsed() < pages::usb::PROMPT_FOR + Duration::from_secs(1) {
+                dirty = true; // redraw so the prompt goes away on time
+            }
         }
         if calling && !app.last_call {
             if !app.awake { app.wake(); }

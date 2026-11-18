@@ -13,6 +13,7 @@
 mod adb;
 mod backup;
 mod ui;
+mod voice_test;
 mod web;
 
 use adb::Adb;
@@ -22,9 +23,9 @@ use std::time::{Duration, Instant};
 include!(concat!(env!("OUT_DIR"), "/payload.rs"));
 
 pub const DEVICE_HELPER: &str = "/data/local/tmp/openu60-device.sh";
-const VERSION: &str = env!("CARGO_PKG_VERSION");
+pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-type Res = Result<(), String>;
+pub(crate) type Res = Result<(), String>;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -64,6 +65,7 @@ fn menu() {
         println!("  5. 查看状态");
         println!("  6. 卸载 OpenU60");
         println!("  7. 关闭调试模式（恢复 USB 共享网络，iPhone 用 USB 线上网要用）");
+        println!("  8. 国行机通话解锁（实验，测试用）");
         println!("  0. 退出");
         let choice = ui::prompt("请输入数字后回车：");
         let r = match choice.as_str() {
@@ -74,9 +76,10 @@ fn menu() {
             "5" => with_adb(|a| status(&a)),
             "6" => with_adb(|a| uninstall(&a, true)),
             "7" => usb_normal(None),
+            "8" => with_adb(|a| voice_test::menu(&a)),
             "0" | "q" | "" => return,
             _ => {
-                ui::warn("请输入 0–7 之间的数字");
+                ui::warn("请输入 0–8 之间的数字");
                 continue;
             }
         };

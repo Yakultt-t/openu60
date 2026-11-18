@@ -25,6 +25,8 @@ fn main() {
         ("6b-appearance", Box::new(|c: &mut Canvas| { pages::more::draw(c, &s, &openu60_screen::settings::Settings::default(), Some(pages::Sub::Appearance), 5, 6); })),
         ("6c-display", Box::new(|c: &mut Canvas| { pages::more::draw(c, &s, &openu60_screen::settings::Settings::default(), Some(pages::Sub::Display), 5, 6); })),
         ("6d-advanced", Box::new(|c: &mut Canvas| { pages::more::draw(c, &s, &openu60_screen::settings::Settings::default(), Some(pages::Sub::Advanced), 5, 6); })),
+        ("7-usb-prompt", Box::new(|c: &mut Canvas| { pages::usb::draw(c, &s); })),
+        ("6f-usb", Box::new(|c: &mut Canvas| { pages::more::draw(c, &s, &openu60_screen::settings::Settings::default(), Some(pages::Sub::Usb), 5, 6); })),
         ("6e-time", Box::new(|c: &mut Canvas| { pages::more::draw(c, &s, &openu60_screen::settings::Settings::default(), Some(pages::Sub::Time), 5, 6); })),
         ("6f-time-manual", Box::new(|c: &mut Canvas| {
             let mut m = s.clone();

@@ -35,6 +35,7 @@ mod sim;
 mod sms;
 mod sms_crypto;
 mod sms_forward;
+mod sms_store;
 mod speedtest;
 mod stk;
 mod system;
@@ -47,6 +48,8 @@ mod voice_bridge;
 mod wifi;
 mod watch_link;
 mod device_alerts;
+mod diag;
+mod voice_unlock;
 mod wifi_wan;
 
 use std::sync::Arc;
@@ -61,6 +64,26 @@ const DEFAULT_BIND: &str = "0.0.0.0:9090";
 const DEFAULT_THREADS: usize = 8;
 
 fn main() {
+    // Support: one archive pass with given thresholds, e.g. `sms-archive-once 60 62`.
+    if std::env::args().nth(1).as_deref() == Some("sms-archive-once") {
+        let arg = |i: usize, d: u64| std::env::args().nth(i).and_then(|s| s.parse().ok()).unwrap_or(d);
+        println!("{:?}", sms_store::cleanup_with(arg(2, 85), arg(3, 60)));
+        return;
+    }
+    // Read-only modem check for support: prints both voice-unlock values and exits.
+    if std::env::args().nth(1).as_deref() == Some("voice-unlock-status") {
+        match voice_unlock::read_modem() {
+            Ok(r) => println!(
+                "sms_only={:?} nv5280_status={} nv5280_head={} verdict={:?}",
+                r.sms_only,
+                r.nv_status,
+                hex::encode(&r.nv[..4]),
+                voice_unlock::judge(&r)
+            ),
+            Err(e) => println!("error: {e}"),
+        }
+        return;
+    }
     let bind = std::env::var("ZTE_AGENT_BIND").unwrap_or_else(|_| DEFAULT_BIND.to_string());
     let threads: usize = std::env::var("ZTE_AGENT_THREADS")
         .ok()
@@ -126,6 +149,8 @@ fn main() {
     update::start();
     state.call_monitor.start(Arc::clone(&state));
     ims_guard::start();
+    voice_unlock::start(Arc::clone(&state));
+    sms_store::start();
     screen_watch::start();
     state.adblock.start();
     dns_guard::start();

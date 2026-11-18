@@ -10,14 +10,14 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use crate::adb::Adb;
 use crate::ui;
 
-fn home() -> PathBuf {
+pub(crate) fn home() -> PathBuf {
     std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
 /// Timestamp in UTC, e.g. 20261111-0812 (no date crate needed).
-fn stamp() -> String {
+pub(crate) fn stamp() -> String {
     let secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) as i64;
     let days = secs.div_euclid(86_400);
     let rem = secs.rem_euclid(86_400);

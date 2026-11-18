@@ -44,6 +44,20 @@ pub fn restart_for_update() {
     }
 }
 
+/// Turned off from the app: the UI gives the screen back to the stock UI, then the watcher
+/// goes too. The loop in `start` keeps it from coming back until it is turned on again.
+pub fn stop_all() {
+    for pid in screen_pids("run") {
+        // SAFETY: plain kill(2) on a pid we just read.
+        unsafe { libc::kill(pid, libc::SIGTERM) };
+    }
+    std::thread::sleep(Duration::from_secs(2));
+    for pid in screen_pids("watch") {
+        // SAFETY: as above.
+        unsafe { libc::kill(pid, libc::SIGTERM) };
+    }
+}
+
 pub fn start() {
     if std::path::Path::new(REOPEN_MARKER).exists() {
         crate::system::spawn_named("screen-reopen", || {
@@ -59,6 +73,10 @@ pub fn start() {
         loop {
             if !std::path::Path::new(BIN).exists() {
                 std::thread::sleep(Duration::from_secs(60));
+                continue;
+            }
+            if !crate::screen_api::enabled() {
+                std::thread::sleep(Duration::from_secs(10));
                 continue;
             }
             let started = Instant::now();

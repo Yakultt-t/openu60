@@ -126,6 +126,12 @@ cmd_uninstall() {
     echo ok
 }
 
+# The agent's own API over loopback, with the token it leaves for on-device clients.
+vu_api() {
+    curl -s -m 40 -X "$1" "http://127.0.0.1:9090$2" -H "Authorization: Bearer $(cat /tmp/openu60-local.token 2>/dev/null)" \
+        -H "Content-Type: application/json" ${3:+-d "$3"}
+}
+
 case "${1:-}" in
     status) cmd_status ;;
     identity) cmd_identity ;;
@@ -136,9 +142,15 @@ case "${1:-}" in
     start) cmd_start ;;
     uninstall) cmd_uninstall ;;
     usb-normal) cmd_usb_normal ;;
+    # Voice unlock (China-market units, experimental): through the agent's local API.
+    vu-status) vu_api GET /api/modem/voice-unlock ;;
+    vu-on) vu_api PUT /api/modem/voice-unlock '{"enabled":true}' ;;
+    vu-off) vu_api PUT /api/modem/voice-unlock '{"enabled":false}' ;;
+    vu-log) vu_api GET /api/modem/voice-unlock/log ;;
+    vu-agentlog) grep -h "voice-unlock" /tmp/zte-agent.prev.log /tmp/zte-agent.log 2>/dev/null | tail -200 ;;
     log) tail -20 /tmp/zte-agent.log 2>/dev/null ;;
     # The installer keeps an existing password on updates so paired phones stay signed in;
     # it needs it once to check that the new agent answers.
     password) sed -n "s/^export ZTE_AGENT_PASSWORD='\(.*\)'$/\1/p" /data/local/tmp/start_zte_agent.sh 2>/dev/null ;;
-    *) echo "usage: $0 status|identity|disable-cloud|stop-agent|place-files|boot-hooks|start|uninstall|usb-normal|log|password"; exit 2 ;;
+    *) echo "usage: $0 status|identity|disable-cloud|stop-agent|place-files|boot-hooks|start|uninstall|usb-normal|vu-status|vu-on|vu-off|vu-log|vu-agentlog|log|password"; exit 2 ;;
 esac

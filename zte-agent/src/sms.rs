@@ -31,6 +31,7 @@ pub fn sms_list(_state: &AppState, body: &[u8]) -> (u16, Value) {
             return (503, json!({"ok": false, "error": format!("sms decrypt: {e}")}));
         }
     }
+    crate::sms_store::merge_into(&mut data, &parsed);
     (200, json!({"ok": true, "data": data}))
 }
 
@@ -92,14 +93,30 @@ pub fn sms_delete(_state: &AppState, body: &[u8]) -> (u16, Value) {
         Ok(v) => v,
         Err(_) => return (400, json!({"ok": false, "error": "invalid JSON"})),
     };
+    let Some(field) = parsed.get("id").and_then(Value::as_str) else {
+        return (400, json!({"ok": false, "error": "'id' must be a string"}));
+    };
+    delete_ids(field)
+}
 
-    let ids = match parse_ids(parsed.get("id")) {
+/// Deletes "id;id;…": archived messages from the archive, the rest from the modem.
+pub fn delete_ids(field: &str) -> (u16, Value) {
+    let ids = match parse_ids(Some(&json!(field))) {
         Ok(v) if !v.is_empty() => v,
         Ok(_) => return (400, json!({"ok": false, "error": "no ids in 'id' field"})),
         Err(e) => return (400, json!({"ok": false, "error": e})),
     };
-
-    let ubus_result = ubus::call("zwrt_wms", "zwrt_wms_delete_sms", Some(&parsed.to_string()));
+    let (archived, ids): (Vec<i64>, Vec<i64>) = ids.into_iter().partition(|&id| crate::sms_store::is_archive_id(id));
+    if !archived.is_empty() {
+        if let Err(e) = crate::sms_store::delete(&archived) {
+            return (503, json!({"ok": false, "error": e}));
+        }
+        if ids.is_empty() {
+            return (200, json!({"ok": true, "deleted_via": "archive"}));
+        }
+    }
+    let field: String = ids.iter().map(|id| format!("{id};")).collect();
+    let ubus_result = ubus::call("zwrt_wms", "zwrt_wms_delete_sms", Some(&json!({"id": field}).to_string()));
 
     let survivors = match db_filter_existing(&ids) {
         Ok(v) => v,
@@ -202,6 +219,20 @@ pub fn sms_mark_read(_state: &AppState, body: &[u8]) -> (u16, Value) {
         Ok(v) => v,
         Err(_) => return (400, json!({"ok": false, "error": "invalid JSON"})),
     };
+    let mut parsed = parsed;
+    // Archived messages are always read; only the modem's own ids go to the firmware.
+    if let Some(field) = parsed.get("id").and_then(Value::as_str).map(str::to_string) {
+        let kept: String = field
+            .split(';')
+            .filter(|p| !p.trim().is_empty())
+            .filter(|p| !p.trim().parse::<i64>().is_ok_and(crate::sms_store::is_archive_id))
+            .map(|p| format!("{};", p.trim()))
+            .collect();
+        if kept.is_empty() {
+            return (200, json!({"ok": true, "data": null}));
+        }
+        parsed["id"] = json!(kept);
+    }
     match ubus::call("zwrt_wms", "zwrt_wms_modify_tag", Some(&parsed.to_string())) {
         Ok(data) => (200, json!({"ok": true, "data": data})),
         Err(e) => (503, json!({"ok": false, "error": e})),

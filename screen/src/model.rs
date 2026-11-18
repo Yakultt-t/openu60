@@ -56,6 +56,12 @@ pub struct Status {
     pub charge_limit: u32,
     pub powerbank: bool,
     pub charger_connected: bool,
+    /// The firmware's USB mode: "user" (network sharing), "debug" (ADB) or "charging".
+    pub usb_mode: String,
+    /// Whether a USB cable is in (Type-C CC detected); None until the first reading.
+    pub usb_cable: Option<bool>,
+    /// Set when a cable is plugged in: show the USB choices for a while.
+    pub usb_prompt: Option<std::time::Instant>,
     // Phone line
     pub call: Option<Call>,
     // Hotspot (for the pairing QR code)
@@ -200,6 +206,9 @@ impl Status {
             charge_limit: 80,
             powerbank: false,
             charger_connected: false,
+            usb_mode: "user".into(),
+            usb_cable: None,
+            usb_prompt: None,
             call: None,
             hotspot_ssid: "U60Pro-8A2F".into(),
             hotspot_key: "12345678".into(),
@@ -306,5 +315,37 @@ pub fn quality(rsrp: f32, sinr: f32) -> (&'static str, u8) {
         ("信号较弱", 2)
     } else {
         ("信号很差", 3)
+    }
+}
+
+/// NR channel bandwidths (TS 38.101), in MHz.
+const NR_BW: [u32; 17] = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 60, 70, 80, 90, 100, 200, 400];
+
+/// Secondary NR carriers from the agent's `nrca`: (band, bandwidth MHz). The U60 Pro firmware
+/// writes "SCC index, PCI, state, band, NR-ARFCN, bandwidth, UL, RSRP, RSRQ, SINR, RSSI" per
+/// secondary; a bandwidth that is not a real NR channel width counts as 0.
+pub fn nr_secondaries(nrca: &str) -> Vec<(String, f32)> {
+    nrca.split(';')
+        .filter_map(|e| {
+            let f: Vec<&str> = e.split(',').map(str::trim).collect();
+            if f.len() < 11 || f[3].is_empty() {
+                return None;
+            }
+            let bw = f[5].trim_end_matches(|c: char| c.is_ascii_alphabetic()).parse::<u32>().ok().filter(|v| NR_BW.contains(v)).unwrap_or(0);
+            Some((f[3].to_string(), bw as f32))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod nr_tests {
+    use super::*;
+
+    #[test]
+    fn parses_china_unicom_3cc() {
+        let v = nr_secondaries("0, 892,1,1,428910,20,0,-80.5,-11.0,9.5,-70.0;1, 366,1,78,627264,100,0,-79.0,-10.5,12.0,-68.0;");
+        assert_eq!(v, vec![("1".to_string(), 20.0), ("78".to_string(), 100.0)]);
+        assert!(nr_secondaries("").is_empty());
+        assert!(nr_secondaries("412,78,0,638688,60").is_empty());
     }
 }

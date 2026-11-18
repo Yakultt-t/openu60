@@ -3,6 +3,7 @@ pub mod call;
 pub mod charge;
 pub mod cover;
 pub mod more;
+pub mod usb;
 pub mod network;
 pub mod pair;
 pub mod sms;
@@ -25,6 +26,10 @@ pub enum Action {
     ChargeLimitToggle,
     ChargeLimit(i32),
     PowerbankToggle,
+    /// USB mode: "user", "debug" or "charging".
+    UsbMode(String),
+    /// Close the plug-in prompt without changing anything.
+    UsbPromptClose,
     Hangup,
     AdblockToggle,
     /// Minutes; 0 means "until 7 tomorrow morning".
@@ -63,6 +68,7 @@ pub enum Sub {
     Display,
     Advanced,
     Time,
+    Usb,
     /// A conversation on the 短信 page.
     Sms(u64),
 }

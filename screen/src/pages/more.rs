@@ -22,6 +22,7 @@ pub fn draw(c: &mut Canvas, s: &Status, set: &Settings, sub: Option<Sub>, page: 
         Some(Sub::Display) => display(c, set),
         Some(Sub::Advanced) => advanced(c, s),
         Some(Sub::Time) => time(c, s),
+        Some(Sub::Usb) => usb(c, s),
         Some(Sub::Sms(_)) => home(c, s, set),
     };
     if sub.is_none() {
@@ -148,21 +149,58 @@ fn advanced(c: &mut Canvas, s: &Status) -> Hits {
     let r = tile(c, x, 84.0, w, 56.0, ("", palette::PURPLE), "时间与时区", &format!("{} · {}", crate::clock_label(s.clock.offset_min), source_label(&s.clock.source)), None);
     chevron(c, x + w - 16.0, 112.0);
     hits.push((Action::Open(Sub::Time), r));
-    hits.push((Action::StockUi, tile(c, x, 148.0, w, 56.0, ("", palette::BLUE), "回到原厂界面", "在原厂界面连按三下电源键回来", None)));
+    hits.push((Action::StockUi, tile(c, x, 146.0, w, 54.0, ("", palette::BLUE), "回到原厂界面", "在原厂界面连按三下电源键回来", None)));
+    let r = tile(c, x, 206.0, w, 54.0, ("", palette::AMBER), "USB 模式", usb_label(&s.usb_mode), None);
+    chevron(c, x + w - 16.0, 233.0);
+    hits.push((Action::Open(Sub::Usb), r));
     let rules = if s.adblock.domains > 0 { format!("{:.1} 万条规则", s.adblock.domains as f32 / 10_000.0) } else { "还没有规则".to_string() };
-    hits.push((Action::AdblockUpdate, tile(c, x, 212.0, w, 56.0, ("", palette::GREEN), "更新广告规则", &rules, None)));
+    hits.push((Action::AdblockUpdate, tile(c, x, 266.0, w, 54.0, ("", palette::GREEN), "更新广告规则", &rules, None)));
     let half = (w - 8.0) / 2.0;
-    hits.push((Action::Reboot, button(c, x, 280.0, half, 44.0, "重启", Rgba(255, 190, 70, 80))));
-    hits.push((Action::PowerOff, button(c, x + half + 8.0, 280.0, half, 44.0, "关机", Rgba(255, 95, 90, 80))));
-    c.glass(x, 336.0, w, 92.0, 16.0);
+    hits.push((Action::Reboot, button(c, x, 328.0, half, 42.0, "重启", Rgba(255, 190, 70, 80))));
+    hits.push((Action::PowerOff, button(c, x + half + 8.0, 328.0, half, 42.0, "关机", Rgba(255, 95, 90, 80))));
+    c.glass(x, 378.0, w, 76.0, 16.0);
     let lines = [
         format!("CPU {:.0}% · 温度 {:.0}°C · 内存 {:.0}%", s.cpu_pct, s.temp_c, s.memory_pct),
         format!("电池 {}% · {:.1} W", s.battery, s.battery_watts),
         format!("屏幕程序 v{}", env!("CARGO_PKG_VERSION")),
     ];
     for (i, l) in lines.iter().enumerate() {
-        c.text(FontId::Sans, l, x + 14.0, 362.0 + i as f32 * 24.0, 11.0, palette::DIM, Align::Left);
+        c.text(FontId::Sans, l, x + 14.0, 398.0 + i as f32 * 21.0, 11.0, palette::DIM, Align::Left);
     }
+    hits
+}
+
+fn usb_label(mode: &str) -> &'static str {
+    match mode {
+        "debug" => "调试（ADB）",
+        "charging" => "仅充电",
+        "user" => "网络共享（正常）",
+        _ => "未知",
+    }
+}
+
+/// USB mode: what the USB-C port does when a cable to a computer or phone is plugged in.
+fn usb(c: &mut Canvas, s: &Status) -> Hits {
+    let mut hits = Hits::new();
+    back_header(c, "USB 模式", &mut hits);
+    let (x, w) = (14.0, 292.0);
+    let options: [(&str, &str, &str); 3] = [
+        ("user", "网络共享（正常）", "电脑、iPhone 用 USB 线上网"),
+        ("debug", "调试（ADB）", "安装程序要用；USB 共享网络暂停"),
+        ("charging", "仅充电", "USB 线只充电"),
+    ];
+    for (i, (mode, title, note)) in options.iter().enumerate() {
+        let y = 84.0 + i as f32 * 66.0;
+        let r = tile(c, x, y, w, 58.0, ("", palette::BLUE), title, note, None);
+        if s.usb_mode == *mode {
+            c.stroke_path(&rounded_rect(x + 1.0, y + 1.0, w - 2.0, 56.0, 16.0), palette::SKY, 2.0);
+            c.text(FontId::Sans, "使用中", x + w - 14.0, y + 34.0, 11.0, palette::SKY, Align::Right);
+        }
+        hits.push((Action::UsbMode(mode.to_string()), r));
+    }
+    c.glass(x, 290.0, w, 70.0, 16.0);
+    c.text(FontId::Sans, "调试模式就是中兴的工厂模式，开着时", x + 14.0, 314.0, 11.0, palette::DIM, Align::Left);
+    c.text(FontId::Sans, "iPhone 不能用 USB 线上网。装好后切回正常。", x + 14.0, 336.0, 11.0, palette::DIM, Align::Left);
     hits
 }
 

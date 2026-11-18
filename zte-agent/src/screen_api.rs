@@ -31,11 +31,18 @@ fn running() -> bool {
     })
 }
 
+/// The OpenU60 screen can be turned off completely: then neither the UI nor its power-key
+/// watcher runs, and the stock UI stays. Everything else the agent does is unaffected.
+pub fn enabled() -> bool {
+    read().get("enabled").and_then(Value::as_bool).unwrap_or(true)
+}
+
 /// Settings as the app sees them: the PIN itself never leaves the router.
 fn public(m: &Map<String, Value>) -> Value {
     let mut out = m.clone();
     let has_pin = out.remove("pin").and_then(|p| p.as_str().map(|s| !s.is_empty())).unwrap_or(false);
     out.insert("pin_set".into(), json!(has_pin));
+    out.insert("enabled".into(), json!(m.get("enabled").and_then(Value::as_bool).unwrap_or(true)));
     out.insert("installed".into(), json!(std::path::Path::new(BIN).exists()));
     out.insert("running".into(), json!(running()));
     out.insert("custom_wallpaper".into(), json!(std::path::Path::new(WALLPAPER).exists()));
@@ -47,7 +54,8 @@ pub fn get() -> (u16, Value) {
 }
 
 /// PUT /api/screen/settings — any of brightness, timeout_secs, theme, wake_cover,
-/// battery_pct, speed_bytes, pin ("" clears the lock, or four digits).
+/// battery_pct, speed_bytes, pin ("" clears the lock, or four digits), enabled (false stops
+/// the OpenU60 screen and its watcher for good; true lets the watcher start again).
 pub fn put(body: &[u8]) -> (u16, Value) {
     let patch: Value = match serde_json::from_slice(body) {
         Ok(v) => v,
@@ -79,8 +87,17 @@ pub fn put(body: &[u8]) -> (u16, Value) {
         }
         m.insert("pin".into(), json!(p));
     }
+    let turn_off = patch["enabled"].as_bool() == Some(false);
+    if let Some(v) = patch["enabled"].as_bool() {
+        m.insert("enabled".into(), json!(v));
+    }
     match write(&m) {
-        Ok(()) => (200, json!({"ok": true, "data": public(&m)})),
+        Ok(()) => {
+            if turn_off {
+                crate::screen_watch::stop_all();
+            }
+            (200, json!({"ok": true, "data": public(&m)}))
+        }
         Err(e) => (500, json!({"ok": false, "error": e})),
     }
 }
@@ -126,6 +143,9 @@ pub fn delete_wallpaper() -> (u16, Value) {
 pub fn open() -> (u16, Value) {
     if !std::path::Path::new(BIN).exists() {
         return (409, json!({"ok": false, "error": "screen UI not installed"}));
+    }
+    if !enabled() {
+        return (409, json!({"ok": false, "error": "screen UI is turned off"}));
     }
     match std::fs::write(OPEN_REQUEST, b"1") {
         Ok(()) => (200, json!({"ok": true})),
