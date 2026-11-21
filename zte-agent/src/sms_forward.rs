@@ -792,7 +792,9 @@ impl SmsForwarder {
                         }
                     }
                     _ => {
-                        if !self.wan_connected.load(Ordering::Relaxed) {
+                        let online = self.wan_connected.load(Ordering::Relaxed)
+                            || crate::wifi_wan::uplink_state() == Some(true);
+                        if !online {
                             Some("no WAN connectivity (permanent error)".to_string())
                         } else {
                             None
