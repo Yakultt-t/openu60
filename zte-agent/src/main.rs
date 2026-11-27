@@ -9,6 +9,7 @@ mod charge_policy;
 mod conn_watchdog;
 mod clock;
 mod update;
+mod data_guard;
 mod data_plan;
 mod device_ext;
 mod dns_guard;
@@ -151,6 +152,7 @@ fn main() {
     ims_guard::start();
     voice_unlock::start(Arc::clone(&state));
     sms_store::start();
+    data_guard::start();
     screen_watch::start();
     state.adblock.start();
     dns_guard::start();

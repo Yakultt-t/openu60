@@ -49,6 +49,7 @@ pub fn modem_data_set(state: &AppState, body: &[u8]) -> (u16, Value) {
     note_user_modem_change(state);
     let result = ubus::call("zwrt_data", "set_wwaniface", Some(&parsed.to_string()));
     settle_modem_data(state);
+    crate::data_guard::check_soon();
     match result {
         Ok(data) => (200, json!({"ok": true, "data": data})),
         Err(e) => (503, json!({"ok": false, "error": e})),
