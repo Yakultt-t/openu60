@@ -2,10 +2,11 @@
 # Official release: router software for online updates + the desktop installers.
 #
 #   BUILD=2 VERSION=0.2.0 NOTES=notes.json SIGNING_KEY=key.pem [RELEASE_RELAYS=host:port] \
-#   [PUBLISH=1] scripts/u60/release.sh
+#   [RELEASE_PUSH_GATEWAY=https://host] [PUBLISH=1] scripts/u60/release.sh
 #
 # - Builds the agent twice: channel "public" (no default servers) and, with RELEASE_RELAYS,
-#   channel "relay" (that relay as the default). Both carry OPENU60_BUILD=$BUILD, the number
+#   channel "relay" (that relay as the default, plus RELEASE_PUSH_GATEWAY as its push gateway so
+#   notifications reach the phone while the app is closed). Both carry OPENU60_BUILD=$BUILD, the number
 #   online updates compare. The touchscreen program and device scripts are shared.
 # - Writes dist-release/router/: the files, manifest.json and manifest.json.sig (Ed25519 over
 #   the exact manifest bytes; the agent embeds the public key, see zte-agent/src/update.rs).
@@ -33,16 +34,17 @@ echo "== web panel (embedded in the agent)"
 ( cd web-admin && npx -y pnpm@10 install --frozen-lockfile >/dev/null && npx -y pnpm@10 build 2>&1 | grep -E "error|built in" )
 [ "$(wc -c < zte-agent/web-dist/index.html)" -gt 100000 ] || { echo "web panel build failed"; exit 1; }
 
-agent() { # channel target-dir [relays]
+agent() { # channel target-dir [relays] [push gateway]
     echo "== agent ($1)"
     ( export OPENU60_CHANNEL="$1" CARGO_TARGET_DIR="$2"
       [ -n "${3:-}" ] && export OPENU60_DEFAULT_RELAYS="$3"
+      [ -n "${4:-}" ] && export OPENU60_PUSH_GATEWAY="$4"
       cargo zigbuild --release --target aarch64-unknown-linux-musl -p zte-agent 2>&1 | grep -E "^error|Finished" )
     [ -x "$2/aarch64-unknown-linux-musl/release/zte-agent" ] || { echo "agent build failed"; exit 1; }
 }
 agent public "$REPO/target-release-public"
 CHANNELS="public"
-if [ -n "${RELEASE_RELAYS:-}" ]; then agent relay "$REPO/target-release-relay" "$RELEASE_RELAYS"; CHANNELS="public relay"; fi
+if [ -n "${RELEASE_RELAYS:-}" ]; then agent relay "$REPO/target-release-relay" "$RELEASE_RELAYS" "${RELEASE_PUSH_GATEWAY:-}"; CHANNELS="public relay"; fi
 echo "== touchscreen program"
 CARGO_TARGET_DIR="$REPO/target-release-public" cargo zigbuild --release --target aarch64-unknown-linux-musl -p openu60-screen --bin openu60-screen 2>&1 | grep -E "^error|Finished"
 
