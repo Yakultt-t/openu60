@@ -262,6 +262,19 @@ pub fn uplink_state() -> Option<bool> {
     }
 }
 
+/// Checks (30 s apart) with the uplink down before the guard restores it. With the station
+/// gone or disabled, two (about a minute: a reload in progress gets time to finish). While
+/// wpa_supplicant is still scanning or joining, six (3 min): it usually finds the network
+/// again by itself, but on 2026-11-27 it sat in SCANNING for hours without ever seeing a home
+/// network that was there, with both hotspots off, so nothing could reach the router. A
+/// restore restarts it and keeps a hotspot on until the uplink is back.
+fn checks_before_restore(state: &str) -> u32 {
+    match state {
+        "INTERFACE_DISABLED" | "DISCONNECTED" | "INACTIVE" | "" => 2,
+        _ => 6,
+    }
+}
+
 pub fn start_guard() {
     crate::system::spawn_named("wifi-uplink-guard", || {
         // rc.local restores the uplink 45 s after boot and that takes up to a minute.
@@ -292,11 +305,10 @@ pub fn start_guard() {
             let mode = v["mode"].as_str().unwrap_or("hotspot");
             let up = v["up"].as_bool().unwrap_or(false);
             let state = v["state"].as_str().unwrap_or("");
-            let lost = mode != "hotspot" && !up && matches!(state, "INTERFACE_DISABLED" | "DISCONNECTED" | "INACTIVE" | "");
+            let lost = mode != "hotspot" && !up;
             UPLINK.store(if mode == "hotspot" { -1 } else if up { 1 } else { 0 }, std::sync::atomic::Ordering::Relaxed);
             misses = if lost { misses + 1 } else { 0 };
-            // Two checks in a row (about a minute): a reload in progress gets time to finish.
-            if misses >= 2 {
+            if misses >= checks_before_restore(state) {
                 misses = 0;
                 eprintln!("[wifi-wan] uplink lost (state {state:?}, mode {mode}); restoring");
                 if let Ok(mut cs) = connect_state().lock() {
@@ -322,4 +334,17 @@ pub fn start_guard() {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod guard_tests {
+    use super::checks_before_restore;
+
+    #[test]
+    fn a_scan_that_never_ends_is_restored_too() {
+        assert_eq!(checks_before_restore("DISCONNECTED"), 2);
+        assert_eq!(checks_before_restore(""), 2);
+        assert_eq!(checks_before_restore("SCANNING"), 6);
+        assert_eq!(checks_before_restore("COMPLETED"), 6); // joined but no IP
+    }
 }
